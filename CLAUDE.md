@@ -1,10 +1,10 @@
-# Job Application Assistant for [YOUR_NAME]
+# Job Application Assistant for Sarthak Agarwal
 
 <!-- SETUP: This file is populated by running /setup -->
 <!-- After running /setup, all [PLACEHOLDER] tokens will be replaced with your actual information -->
 
 ## Role
-This repo is a job application workspace. Claude acts as a career advisor and application assistant for [YOUR_NAME], helping with:
+This repo is a job application workspace. Claude acts as a career advisor and application assistant for Sarthak Agarwal, helping with:
 1. **Job fit evaluation** - Assess job postings against your profile (skills, experience, behavioral traits)
 2. **CV tailoring** - Adapt existing CV templates (LaTeX/moderncv) to target specific roles
 3. **Cover letter writing** - Draft targeted cover letters using existing templates (LaTeX)
@@ -16,52 +16,69 @@ This repo is a job application workspace. Claude acts as a career advisor and ap
 <!-- This section is auto-populated by /setup. You can also fill it in manually. -->
 
 ### Identity
-- **Name:** [YOUR_NAME]
-- **Location:** [YOUR_CITY], [YOUR_COUNTRY] ([YOUR_COMMUTE_CONSTRAINTS])
+- **Name:** Sarthak Agarwal
+- **Location:** Mumbai, India (targeting remote or Delhi NCR)
 - **Languages:**
   | Language | Level |
   |----------|-------|
-  | [LANGUAGE] | [LEVEL] |
+  | English | Fluent |
+  | Hindi | Native |
   <!-- Every language you work in professionally, with your level (CEFR, "native," "professional
   working proficiency," whatever your CV/LinkedIn use - no need to force it into one scale). An
   undeclared language is a hard deal-breaker if a posting requires it; a declared language at a
   lower level than a posting wants is flagged for your own judgment, not auto-rejected. See
   04-job-evaluation.md's Language Gate. -->
-- **CV language:** [YOUR_CV_LANGUAGE] <!-- English unless your market expects otherwise; /setup asks -->
+- **CV language:** English <!-- English unless your market expects otherwise; /setup asks -->
 
-- **Status:** [YOUR_EMPLOYMENT_STATUS]
-- **LinkedIn headline:** "[YOUR_LINKEDIN_HEADLINE]"
+- **Status:** Employed (AI Engineer at Dream11 Pulse)
+- **LinkedIn headline:** "AI Engineer | GenAI & Agentic Engineering | Building PulseAI multi-tenant observability platform at Dream11"
 
 ### Education
 <!-- List your degrees, most recent first -->
-- **[DEGREE_LEVEL] in [FIELD]** ([YEAR_START]-[YEAR_END]) - [INSTITUTION]
-  - Thesis: "[THESIS_TITLE]"
-  - Topics: [KEY_TOPICS]
+- **M.Tech in Computer Science** (2020-2022) - IIT Guwahati
+  - Topics: Computer Systems, Algorithms, Machine Learning
+
+- **B.Tech in Computer Science** (2016-2020) - USICT GGSIPU
+  - Topics: Data Structures, Operating Systems, Databases, Computer Networks, Machine Learning
 
 ### Professional Experience
 <!-- List your roles, most recent first -->
-- **[JOB_TITLE]** ([START_DATE] - [END_DATE]) - **[COMPANY]** ([LOCATION])
-  - [KEY_RESPONSIBILITY_1]
-  - [KEY_RESPONSIBILITY_2]
-  - [KEY_ACHIEVEMENT]
+- **AI Engineer | GenAI & Agentic Engineering** (Nov 2023 - Present) - **Dream11 Pulse** (Mumbai, India)
+  - Shipped PulseAI as multi-tenant SaaS observability platform; RCA agent surfaced $200K revenue impact at FanCode
+  - Defined Features-as-Tools contract and dual RAG for cross-DB natural-language queries; built Summary Agent
+  - Designed persona-driven multi-agent layer for 5 personas; Planner→Executor→Summary→Report pipeline
+  - Automated golden-dataset eval suite (65+ cases) as deployment gate with Promptfoo/ADK; production guardrails: 3-layer leak defense, PII redaction, anti-hallucination
+  - Built RCA agent with Google ADK+MCP, XenoRAG Confluence→Qdrant
+  - Deployed FastAPI backend on EC2 with Docker/Terraform/Jenkins CI/CD
+  - Built spec-to-ship workflow + Ralph loop with Opus/Haiku advisor pattern adopted by 50-person eng team
+  - MCP server for 47 observability tools across 9 domains; pluggable MCP tool platform
+
+- **SDE I Mobile Product & Infrastructure** (Nov 2022 - Nov 2023) - **Dream11** (Mumbai, India)
+  - Cut cold start latency 90% (30s→3s), APK 125MB→50MB
+  - Shipped GST compliance & Dreampay handlers processing INR 1Cr+ daily
+
+- **SDE I Developer Experience** (Jul 2022 - Nov 2022) - **Dream11** (Mumbai, India)
+  - Built Appium automated test suite 100+ UI tests + deep-link CI runners, pipeline duration -50% at 25-30M MAU
+
+- **Teaching Assistant** (Aug 2020 - May 2022) - **IIT Guwahati** (Guwahati, India)
 
 ### Technical Skills
-- **Primary:** [YOUR_PRIMARY_SKILLS]
-- **Secondary:** [YOUR_SECONDARY_SKILLS]
-- **Domain:** [YOUR_DOMAIN_EXPERTISE]
-- **Software:** [YOUR_TOOLS_AND_SOFTWARE]
+- **Primary:** Python, TypeScript, JavaScript, Java, SQL, C/C++
+- **Secondary:** Google ADK, MCP, Agentic AI, multi-agent orchestration, LLM orchestration (Gemini Flash/Claude Opus/Haiku), RAG, dynamic tool routing, prompt engineering
+- **Domain:** AI/ML engineering, GenAI, agentic systems, observability, mobile infrastructure, developer experience
+- **Software:** ClickHouse, Qdrant, MySQL, AWS EC2/Athena/S3, Docker, Terraform, Jenkins CI/CD, FastAPI, Node.js, Promptfoo, Braintrust
 
 ### Certifications
 <!-- List relevant certifications with dates -->
-- **[CERTIFICATION_NAME]** - [HOURS]h - completed [DATE]
+- **GATE 2020 CS** - All-India Rank 312 / 100k+ (top 0.3%)
 
 ### Publications
 <!-- List peer-reviewed publications, if any -->
-- [AUTHOR_LIST] ([YEAR]). [TITLE]. [JOURNAL].
+None at this time.
 
 ### Awards
 <!-- List relevant awards, hackathons, competitions -->
-- [AWARD_NAME] - [EVENT] ([YEAR])
+- **National Award** - Smart India Hackathon for Pragati ML rainfall prediction platform - 2018
 
 ### Behavioral Profile
 <!-- Your behavioral assessment results (PI, DISC, Myers-Briggs, or self-assessment) -->
@@ -73,19 +90,22 @@ This repo is a job application workspace. Claude acts as a career advisor and ap
 
 ### What Excites You
 <!-- What motivates you professionally -->
-- [PASSION_1]
-- [PASSION_2]
+- Building AI/ML systems that solve real problems at scale
+- Remote work enabling location flexibility (living near family in Delhi NCR)
+- Multi-agent architectures and LLM orchestration
 
 ### Target Sectors
 <!-- Industries and companies you're targeting -->
-- [SECTOR_1]: [EXAMPLE_COMPANIES]
-- [SECTOR_2]: [EXAMPLE_COMPANIES]
+- **AI/GenAI Engineering:** AI startups, tech companies building AI products
+- **ML Engineering:** Companies with ML platforms, MLOps, model serving
+- **Agentic AI:** Companies building autonomous agents, AI assistants
 
 ### Deal-breakers
 <!-- Hard constraints on job search. Language requirements are handled separately and
 automatically from your Languages table above - don't duplicate them here. -->
-- [DEALBREAKER_1]
-- [DEALBREAKER_2]
+- Must be remote OR based in Delhi NCR (Noida/Delhi)
+- Must focus on AI/ML/GenAI engineering
+- No technical lead roles at this time
 
 ## Repo Structure
 - `cv/` - LaTeX CV variants (moderncv template, banking style)

@@ -8,14 +8,14 @@ framework_version: 1.1.1
 <!-- After running /setup, all sections will be filled with your actual information -->
 
 ## Identity
-- **Name:** [YOUR_NAME]
-- **Location:** [YOUR_ADDRESS]
-- **Phone:** [YOUR_PHONE]
-- **Email:** [YOUR_EMAIL]
-- **LinkedIn:** [YOUR_LINKEDIN_URL]
-- **GitHub:** [YOUR_GITHUB_URL]
-- **Status:** [YOUR_EMPLOYMENT_STATUS]
-- **Constraints:** [YOUR_COMMUTE_OR_LOCATION_CONSTRAINTS]
+- **Name:** Sarthak Agarwal
+- **Location:** Mumbai, India (targeting remote or Delhi NCR)
+- **Phone:** +91-8506989793
+- **Email:** sarthak01041998@gmail.com
+- **LinkedIn:** https://linkedin.com/in/sarthak-agarwal-954330175
+- **GitHub:** https://github.com/sarthak-d11
+- **Status:** Employed (AI Engineer at Dream11 Pulse)
+- **Constraints:** Must be remote OR based in Delhi NCR (Noida/Delhi); Mumbai is not acceptable
 
 ### Languages
 <!-- Every language you can work in professionally, with your honest level. Used by the
@@ -25,49 +25,77 @@ a hard no, not a gap to smooth over. -->
 
 | Language | Level | Notes |
 |----------|-------|-------|
-| [LANGUAGE] | [LEVEL, e.g. "Native" / "C2" / "B1/B2 (conversational)"] | [optional] |
+| English | Fluent | Professional working proficiency |
+| Hindi | Native | |
 
 ## Education
 
 | Degree | Period | Institution | Key Topics |
 |--------|--------|-------------|------------|
-| [DEGREE] | [YEARS] | [INSTITUTION] | [TOPICS] |
+| M.Tech Computer Science | 2020-2022 | IIT Guwahati | Computer Systems, Algorithms, Machine Learning |
+| B.Tech Computer Science | 2016-2020 | USICT GGSIPU | Data Structures, Operating Systems, Databases, Computer Networks, Machine Learning |
 
 ## Professional Experience
 
-### [JOB_TITLE] - [COMPANY] ([START] - [END])
-[LOCATION]
-- [RESPONSIBILITY_OR_ACHIEVEMENT_1]
-- [RESPONSIBILITY_OR_ACHIEVEMENT_2]
-- [RESPONSIBILITY_OR_ACHIEVEMENT_3]
+### AI Engineer | GenAI & Agentic Engineering - Dream11 Pulse (Nov 2023 - Present)
+Mumbai, India
+- Shipped PulseAI as multi-tenant SaaS observability platform; RCA agent surfaced $200K revenue impact at FanCode
+- Defined Features-as-Tools contract and dual RAG for cross-DB natural-language queries; built Summary Agent
+- Designed persona-driven multi-agent layer for 5 personas; Planner→Executor→Summary→Report pipeline
+- Automated golden-dataset eval suite (65+ cases) as deployment gate with Promptfoo/ADK; production guardrails: 3-layer leak defense, PII redaction, anti-hallucination
+- Built RCA agent with Google ADK+MCP, XenoRAG Confluence→Qdrant
+- Deployed FastAPI backend on EC2 with Docker/Terraform/Jenkins CI/CD
+- Built spec-to-ship workflow + Ralph loop with Opus/Haiku advisor pattern adopted by 50-person eng team
+- MCP server for 47 observability tools across 9 domains; pluggable MCP tool platform
 
-<!-- Add more roles as needed -->
+### SDE I Mobile Product & Infrastructure - Dream11 (Nov 2022 - Nov 2023)
+Mumbai, India
+- Cut cold start latency 90% (30s→3s), APK 125MB→50MB
+- Shipped GST compliance & Dreampay handlers processing INR 1Cr+ daily
+
+### SDE I Developer Experience - Dream11 (Jul 2022 - Nov 2022)
+Mumbai, India
+- Built Appium automated test suite 100+ UI tests + deep-link CI runners, pipeline duration -50% at 25-30M MAU
+
+### Teaching Assistant - IIT Guwahati (Aug 2020 - May 2022)
+Guwahati, India
 
 ## Independent Projects
 <!-- Projects outside of employment: freelance, open source, personal -->
-- **[PROJECT_NAME]**: [DESCRIPTION]
+- **PulseAI Multi-Agent Platform**: Multi-tenant observability SaaS with 5-persona agent architecture, deployed at Dream11
+- **MCP Server for Observability**: 47 tools across 9 domains, pluggable tool platform
+- **Spec-to-Ship Workflow + Ralph Loop**: AI-assisted development workflow with Opus/Haiku advisor pattern
 
 ## Technical Skills
 
 ### Programming & ML
-- **[LANGUAGE]** ([PROFICIENCY]): [FRAMEWORKS_AND_LIBRARIES]
-- [OTHER_SKILLS]
+- **Python** (Expert): FastAPI, PyTorch, LangChain, Google ADK, MCP, Promptfoo
+- **TypeScript/JavaScript** (Advanced): Node.js, React (basics)
+- **Java** (Proficient): Spring Boot, Android
+- **SQL** (Advanced): ClickHouse, MySQL, Athena
+- **C/C++** (Proficient): Systems programming
 
 ### Domain Expertise
-- [DOMAIN_1]
-- [DOMAIN_2]
+- AI/ML Engineering & GenAI
+- Multi-agent orchestration & LLM orchestration
+- Agentic AI systems & RAG architectures
+- Observability & monitoring platforms
+- Mobile infrastructure & Developer Experience
+- MLOps & model evaluation (golden datasets, Promptfoo)
 
 ### Software & Tools
-- [TOOL_LIST]
+- **Data/Vector Stores:** ClickHouse, Qdrant, MySQL, AWS Athena/S3
+- **Infrastructure:** AWS EC2, Docker, Terraform, Jenkins CI/CD
+- **ML/AI:** Google ADK, MCP, Promptfoo, Braintrust, PII redaction, output guardrails
+- **APIs/Frameworks:** FastAPI, Node.js
 
 ## Publications
 <!-- List peer-reviewed publications, if any -->
-1. [AUTHOR_LIST] ([YEAR]). [TITLE]. [JOURNAL]. [DOI_LINK]
+None at this time.
 
 ## Awards
-- [AWARD] - [EVENT] ([YEAR])
+- **GATE 2020 CS** - All-India Rank 312 / 100k+ (top 0.3%) - 2020
+- **National Award** - Smart India Hackathon for Pragati ML rainfall prediction platform - 2018
 
 ## References
-- [NAME], [TITLE], [COMPANY] ([EMAIL], [PHONE])
-
-More references available upon request.
+Available upon request.

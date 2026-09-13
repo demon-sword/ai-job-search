@@ -1,4 +1,4 @@
-%% Example CV - [YOUR_NAME]
+%% Example CV - Sarthak Agarwal
 %% Comprehensive overview of all competencies, experience, and achievements.
 %% Use as a master reference when tailoring role-specific CVs.
 %%
@@ -33,7 +33,7 @@
     linkcolor=blue,
     filecolor=magenta,
     urlcolor=blue,
-    pdftitle={[YOUR_NAME] - CV},
+    pdftitle={Sarthak Agarwal - CV},
     % Keep pdfpagemode=UseNone: this block runs after moderncv's own
     % \AtEndPreamble (moderncv.cls sets pdfpagemode there), so a FullScreen
     % value here would win and open every CV in fullscreen presentation mode.
@@ -43,13 +43,13 @@
 \usepackage{import}
 
 % personal data
-\name{[First]}{[Last]}
+\name{Sarthak}{Agarwal}
 % If you have no address to list, DELETE this whole line. \address{}{}{} fails
 % with "There's no line here to end" on every moderncv version.
-\address{[Your Address, City, Country]}{}{}
-\phone[mobile]{[+XX XXXXXXXXXX]}
-\email{[your.email@example.com]}
-\extrainfo{\href{[https://linkedin.com/in/your-profile]}{LinkedIn}, \href{[https://github.com/your-username]}{GitHub}}
+\address{Mumbai, India}{}{}
+\phone[mobile]{+91-8506989793}
+\email{sarthak01041998@gmail.com}
+\extrainfo{\href{https://linkedin.com/in/sarthak-agarwal-954330175}{LinkedIn}, \href{https://github.com/sarthak-d11}{GitHub}}
 
 \begin{document}
 
@@ -60,7 +60,7 @@
 % ============================================================
 
 \vspace{6pt}
-\small{[Write a 3-5 line profile statement tailored to the role you're applying for. Focus on what makes you uniquely qualified. Example: "Data scientist with a PhD in [field] and X years of industry experience. Combines deep domain expertise in [domain] with strong applied machine learning and Python development skills. Experienced in developing end-to-end ML pipelines, from data ingestion to stakeholder-facing dashboards."]}
+\small{AI Engineer with 2+ years building production GenAI systems at Dream11 Pulse. Architected PulseAI -- a multi-tenant SaaS observability platform with a 5-persona multi-agent layer (Planner→Executor→Summary→Report) serving 9 domains via 47 MCP tools. Designed dual-RAG for cross-DB natural-language queries, built 65-case golden-dataset evaluation gate (Promptfoo/ADK) with 3-layer production guardrails (PII redaction, anti-hallucination, leak defense). Expert in Google ADK, MCP, LLM orchestration (Gemini/Claude), and agentic AI patterns. Strong in Python, TypeScript, ClickHouse, Qdrant, FastAPI, Docker/Terraform, CI/CD. M.Tech CS from IIT Guwahati (GATE AIR 312). Seeking remote-first AI/ML/GenAI engineering role.}
 
 % ============================================================
 %     CORE COMPETENCIES
@@ -70,15 +70,15 @@
 \vspace{1pt}
 \begin{itemize}
 
-\item \textbf{[Skill Category 1]}: [Specific skills, frameworks, tools. Be concrete.]
+\item \textbf{AI \& Agentic Systems}: Google ADK, MCP, Multi-agent orchestration, LLM orchestration (Gemini Flash/Claude Opus/Haiku), RAG (dual-RAG, XenoRAG), Dynamic tool routing, Prompt engineering, Features-as-Tools contract
 
-\item \textbf{[Skill Category 2]}: [Specific skills, frameworks, tools.]
+\item \textbf{ML Engineering \& Evaluation}: Promptfoo, Golden-dataset regression testing (65+ cases), Hallucination detection, Braintrust, PII redaction, Output guardrails, Deployment gating (80% pass threshold)
 
-\item \textbf{[Skill Category 3]}: [Specific skills, frameworks, tools.]
+\item \textbf{Programming Languages}: Python (Expert), TypeScript/JavaScript (Advanced), Java (Proficient), SQL (Advanced), C/C++ (Proficient)
 
-\item \textbf{[Skill Category 4]}: [Domain expertise, methods, approaches.]
+\item \textbf{Data \& Infrastructure}: ClickHouse, Qdrant, MySQL, AWS EC2/Athena/S3, Docker, Terraform, Jenkins CI/CD, FastAPI, Node.js
 
-\item \textbf{[Skill Category 5]}: [Tools, platforms, software.]
+\item \textbf{Domain Expertise}: GenAI/ML Engineering, Multi-agent architectures, Observability platforms, Mobile infrastructure, Developer experience, MLOps
 
 \end{itemize}
 
@@ -91,31 +91,39 @@
 \begin{itemize}
 
 % --- Most Recent Role ---
-\item{\cventry{[YYYY-Present]}{[Job Title]}{[Company]}{[City, Country]}{}{\vspace{1pt}
+\item{\cventry{Nov 2023-Present}{AI Engineer | GenAI \& Agentic Engineering}{Dream11 Pulse}{Mumbai, India}{}{\vspace{1pt}
 \begin{itemize}
-    \item {[Achievement or responsibility 1 - be specific, use numbers where possible]}
-    \item {[Achievement or responsibility 2]}
-    \item {[Achievement or responsibility 3]}
-    \item {[Achievement or responsibility 4]}
+    \item Shipped PulseAI as multi-tenant SaaS observability platform adopted by FanCode, SouledStore, Fleek, OYO, Meesho; RCA agent surfaced \$200K revenue-impacting bug at FanCode
+    \item Designed 5-persona multi-agent architecture (Planner, Executor, Summary, Report, RCA) with Features-as-Tools contract; dual-RAG for cross-DB natural-language queries across ClickHouse, Athena, S3, MySQL
+    \item Built 65+ case golden-dataset evaluation suite with Promptfoo/Google ADK gating deploys at 80% pass threshold; 3-layer production guardrails: PII redaction, anti-hallucination, leak defense
+    \item Developed RCA agent with Google ADK+MCP and XenoRAG (Confluence to Qdrant); autonomous incident investigation across logs, metrics, traces
+    \item Deployed FastAPI backend on EC2 with Docker/Terraform/Jenkins CI/CD; built spec-to-ship workflow + Ralph loop with Opus/Haiku advisor pattern adopted by 50-person engineering team
+    \item Built MCP server for 47 observability tools across 9 domains; pluggable MCP tool platform
 \end{itemize}}}
 
 \vspace{3pt}
 
 % --- Previous Role ---
-\item{\cventry{[YYYY-YYYY]}{[Job Title]}{[Company]}{[City, Country]}{}{\vspace{1pt}
+\item{\cventry{Nov 2022-Nov 2023}{SDE I Mobile Product \& Infrastructure}{Dream11}{Mumbai, India}{}{\vspace{1pt}
 \begin{itemize}
-    \item {[Achievement or responsibility 1]}
-    \item {[Achievement or responsibility 2]}
-    \item {[Achievement or responsibility 3]}
+    \item Cut cold start latency 90\% (30s to 3s) and APK size 60\% (125MB to 50MB) for 25-30M MAU app
+    \item Shipped GST compliance \& Dreampay payment handlers processing INR 1Cr+ daily
 \end{itemize}}}
 
 \vspace{3pt}
 
 % --- Earlier Role ---
-\item{\cventry{[YYYY-YYYY]}{[Job Title]}{[Company]}{[City, Country]}{}{\vspace{1pt}
+\item{\cventry{Jul 2022-Nov 2022}{SDE I Developer Experience}{Dream11}{Mumbai, India}{}{\vspace{1pt}
 \begin{itemize}
-    \item {[Achievement or responsibility 1]}
-    \item {[Achievement or responsibility 2]}
+    \item Built Appium automated test suite (100+ UI tests) + deep-link CI runners; reduced pipeline duration 50\% at 25-30M MAU
+\end{itemize}}}
+
+\vspace{3pt}
+
+% --- Earlier Role ---
+\item{\cventry{Aug 2020-May 2022}{Teaching Assistant}{IIT Guwahati}{Guwahati, India}{}{\vspace{1pt}
+\begin{itemize}
+    \item Assisted in graduate-level CS courses; mentored students in algorithms, systems, and ML projects
 \end{itemize}}}
 
 \end{itemize}
@@ -128,14 +136,14 @@
 \vspace{1pt}
 \begin{itemize}
 
-\item{\cventry{[YYYY-YYYY]}{[Degree] in [Field]}{[Institution]}{[City, Country]}{}{\vspace{1pt}
-Thesis: ``[Thesis Title].'' [Brief description of research focus.]
+\item{\cventry{2020-2022}{M.Tech Computer Science}{IIT Guwahati}{Guwahati, India}{}{\vspace{1pt}
+Key topics: Computer Systems, Algorithms, Machine Learning.
 }}
 
 \vspace{3pt}
 
-\item{\cventry{[YYYY-YYYY]}{[Degree] in [Field]}{[Institution]}{[City, Country]}{}{\vspace{1pt}
-[Brief description or key topics.]
+\item{\cventry{2016-2020}{B.Tech Computer Science}{USICT GGSIPU}{Delhi, India}{}{\vspace{1pt}
+Key topics: Data Structures, Operating Systems, Databases, Computer Networks, Machine Learning.
 }}
 
 \end{itemize}
@@ -147,17 +155,7 @@ Thesis: ``[Thesis Title].'' [Brief description of research focus.]
 \section{Languages}
 \vspace{1pt}
 \begin{itemize}
-\item {[Language 1] (native), [Language 2] (fluent), [Language 3] (intermediate).}
-\end{itemize}
-
-% ============================================================
-%     PUBLICATIONS (optional)
-% ============================================================
-
-\section{Publications}
-\vspace{1pt}
-\begin{itemize}
-\item {[Author(s)] ([Year]). [Title]. [Journal/Conference]. \href{[DOI_URL]}{DOI link}}
+\item English (Fluent), Hindi (Native)
 \end{itemize}
 
 % ============================================================
@@ -167,7 +165,8 @@ Thesis: ``[Thesis Title].'' [Brief description of research focus.]
 \section{Honors and Awards}
 \vspace{1pt}
 \begin{itemize}
-\item{\textbf{[Award Name]} -- [Event/Organization] ([Year]).}
+\item \textbf{GATE 2020 CS} -- All-India Rank 312 / 100k+ (top 0.3\%) (2020).
+\item \textbf{National Award} -- Smart India Hackathon for Pragati ML rainfall prediction platform (2018).
 \end{itemize}
 
 % ============================================================
@@ -177,7 +176,7 @@ Thesis: ``[Thesis Title].'' [Brief description of research focus.]
 \section{References}
 \vspace{1pt}
 \begin{itemize}
-\item{Available upon request.}
+\item Available upon request.
 \end{itemize}
 
 \end{document}
