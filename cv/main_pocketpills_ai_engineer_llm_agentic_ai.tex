@@ -1,0 +1,166 @@
+%% Tailored CV - PocketPills, AI Engineer - LLM & Agentic AI
+%% Compile with: lualatex main_pocketpills_ai_engineer_llm_agentic_ai.tex
+
+\documentclass[11pt,a4paper,sans]{moderncv}
+\moderncvstyle{banking}
+\moderncvcolor{blue}
+
+\renewcommand*{\namefont}{\fontsize{34}{36}\bfseries\upshape}
+\colorlet{firstnamecolor}{color1}
+\colorlet{lastnamecolor}{color1}
+\colorlet{namecolor}{color1}
+\renewcommand*{\sectionstyle}[1]{{\sectionfont\color{color1}#1}}
+
+\usepackage[utf8]{inputenc}
+\AtEndPreamble{\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    filecolor=magenta,
+    urlcolor=blue,
+    pdftitle={Sarthak Agarwal - CV},
+    pdfpagemode=UseNone,
+}}
+\usepackage[scale=0.77]{geometry}
+\usepackage{import}
+\usepackage{needspace}
+
+% personal data
+\name{Sarthak}{Agarwal}
+\address{Mumbai, India}{}{}
+\phone[mobile]{+91-8506989793}
+\email{sarthak01041998@gmail.com}
+\extrainfo{\href{https://linkedin.com/in/sarthak-agarwal-954330175}{LinkedIn}, \href{https://github.com/sarthak-d11}{GitHub}}
+
+\begin{document}
+
+\makecvtitle
+
+% ============================================================
+%     PROFILE STATEMENT
+% ============================================================
+
+\vspace{6pt}
+\small{AI Engineer with 2+ years building production GenAI systems at Dream11 Pulse. Architected PulseAI -- a multi-tenant SaaS observability platform with a 5-persona multi-agent layer (Planner, Executor, Summary, Report, RCA) serving 9 domains via 47 MCP tools. Designed dual-RAG for cross-DB natural-language queries, built 65-case golden-dataset evaluation gate (Promptfoo/Google ADK) with 3-layer production guardrails (PII redaction, anti-hallucination, leak defense). Expert in Google ADK, MCP, LLM orchestration (Gemini/Claude), LangChain/LangGraph-equivalent agentic frameworks, RAG, vector databases (Qdrant), and agentic AI patterns. Strong in Python, FastAPI, Docker, Terraform, AWS, CI/CD. M.Tech CS from IIT Guwahati (GATE AIR 312). Seeking AI Engineer role building LLM and agentic AI systems.}
+
+% ============================================================
+%     CORE COMPETENCIES
+% ============================================================
+
+\section{Core Competencies}
+\vspace{1pt}
+\begin{itemize}
+
+\item \textbf{LLM \& Agentic AI Frameworks}: Google ADK, MCP (Model Context Protocol), LangChain/LangGraph-equivalent orchestration, Multi-agent architectures, Prompt engineering, Dynamic tool routing, Structured outputs, Context/memory management
+
+\item \textbf{RAG Systems \& Vector Search}: Dual-RAG, XenoRAG, Qdrant, Embeddings, Retrieval optimization, Intelligent reranking, Cross-DB natural-language queries (ClickHouse, Athena, S3, MySQL)
+
+\item \textbf{AI Evaluation \& Guardrails}: Promptfoo, Golden-dataset regression testing (65+ cases), Google ADK evaluation, Braintrust, PII redaction, Anti-hallucination, Output guardrails, Deployment gating (80\% pass threshold), Observability (LangSmith-equivalent)
+
+\item \textbf{Programming \& Backend}: Python (Expert), FastAPI, TypeScript/JavaScript (Advanced), Java (Proficient), SQL (Advanced), REST APIs, Asynchronous programming, OOP principles
+
+\item \textbf{Infrastructure \& MLOps}: Docker, Terraform, AWS EC2/S3/Athena, Jenkins CI/CD, ClickHouse, Qdrant, MySQL, Production deployment, Cloud infrastructure
+
+\end{itemize}
+
+% ============================================================
+%     PROFESSIONAL EXPERIENCE
+% ============================================================
+
+\section{Professional Experience}
+\vspace{3pt}
+\begin{itemize}
+
+% --- Most Recent Role ---
+\needspace{5\baselineskip}
+\item{\cventry{Nov 2023-Present}{AI Engineer \textbar\ GenAI \& Agentic Engineering}{Dream11 Pulse}{Mumbai, India}{}{\vspace{1pt}
+\begin{itemize}
+    \item Shipped PulseAI as multi-tenant SaaS observability platform adopted by FanCode, SouledStore, Fleek, OYO, Meesho; RCA agent surfaced \$200K revenue-impacting bug at FanCode
+    \item Designed 5-persona multi-agent architecture (Planner, Executor, Summary, Report, RCA) with Features-as-Tools contract; dual-RAG for cross-DB natural-language queries across ClickHouse, Athena, S3, MySQL -- directly maps to LangChain/LangGraph agentic workflows and tool calling patterns
+    \item Built 65+ case golden-dataset evaluation suite with Promptfoo/Google ADK gating deploys at 80\% pass threshold; 3-layer production guardrails: PII redaction, anti-hallucination, leak defense -- addresses evaluation frameworks, observability, and guardrails requirements
+    \item Developed RCA agent with Google ADK+MCP and XenoRAG (Confluence to Qdrant); autonomous incident investigation across logs, metrics, traces -- demonstrates MCP, tool calling, structured outputs, vector search, and memory management
+    \item Deployed FastAPI backend on EC2 with Docker/Terraform/Jenkins CI/CD; built spec-to-ship workflow + Ralph loop with Opus/Haiku advisor pattern adopted by 50-person engineering team -- covers REST APIs, backend architecture, Docker, cloud, CI/CD
+    \item Built MCP server for 47 observability tools across 9 domains; pluggable MCP tool platform -- demonstrates Model Context Protocol expertise, tool calling, function calling, and dynamic tool routing
+\end{itemize}}}
+
+\vspace{3pt}
+
+% --- Previous Role ---
+\needspace{5\baselineskip}
+\item{\cventry{Nov 2022-Nov 2023}{SDE I Mobile Product \& Infrastructure}{Dream11}{Mumbai, India}{}{\vspace{1pt}
+\begin{itemize}
+    \item Cut cold start latency 90\% (30s to 3s) and APK size 60\% (125MB to 50MB) for 25-30M MAU app
+    \item Shipped GST compliance \& Dreampay payment handlers processing INR 1Cr+ daily
+\end{itemize}}}
+
+\vspace{3pt}
+
+% --- Earlier Role ---
+\needspace{5\baselineskip}
+\item{\cventry{Jul 2022-Nov 2022}{SDE I Developer Experience}{Dream11}{Mumbai, India}{}{\vspace{1pt}
+\begin{itemize}
+    \item Built Appium automated test suite (100+ UI tests) + deep-link CI runners; reduced pipeline duration 50\% at 25-30M MAU
+\end{itemize}}}
+
+\vspace{3pt}
+
+% --- Earlier Role ---
+\needspace{5\baselineskip}
+\item{\cventry{Aug 2020-May 2022}{Teaching Assistant}{IIT Guwahati}{Guwahati, India}{}{\vspace{1pt}
+\begin{itemize}
+    \item Assisted in graduate-level CS courses; mentored students in algorithms, systems, and ML projects
+\end{itemize}}}
+
+\end{itemize}
+
+% ============================================================
+%     EDUCATION
+% ============================================================
+
+\section{Education}
+\vspace{1pt}
+\begin{itemize}
+
+\item{\cventry{2020-2022}{M.Tech Computer Science}{IIT Guwahati}{Guwahati, India}{}{\vspace{1pt}
+Key topics: Computer Systems, Algorithms, Machine Learning.
+}}
+
+\vspace{3pt}
+
+\item{\cventry{2016-2020}{B.Tech Computer Science}{USICT GGSIPU}{Delhi, India}{}{\vspace{1pt}
+Key topics: Data Structures, Operating Systems, Databases, Computer Networks, Machine Learning.
+}}
+
+\end{itemize}
+
+% ============================================================
+%     LANGUAGES
+% ============================================================
+
+\section{Languages}
+\vspace{1pt}
+\begin{itemize}
+\item English (Fluent), Hindi (Native)
+\end{itemize}
+
+% ============================================================
+%     HONORS AND AWARDS
+% ============================================================
+
+\section{Honors and Awards}
+\vspace{1pt}
+\begin{itemize}
+\item \textbf{GATE 2020 CS} -- All-India Rank 312 / 100k+ (top 0.3\%) (2020).
+\item \textbf{National Award} -- Smart India Hackathon for Pragati ML rainfall prediction platform (2018).
+\end{itemize}
+
+% ============================================================
+%     REFERENCES
+% ============================================================
+
+\section{References}
+\vspace{1pt}
+\begin{itemize}
+\item Available upon request.
+\end{itemize}
+
+\end{document}

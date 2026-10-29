@@ -1,0 +1,54 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Cover Letter - PocketPills, AI Engineer - LLM & Agentic AI
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass[]{cover}
+\usepackage{fancyhdr}
+
+\pagestyle{fancy}
+\fancyhf{}
+
+\rfoot{Page \thepage \hspace{0pt}}
+\thispagestyle{empty}
+\renewcommand{\headrulewidth}{0pt}
+\begin{document}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%     TITLE NAME
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\namesection{}{\Huge{Sarthak Agarwal}}{  \href{mailto:sarthak01041998@gmail.com}{sarthak01041998@gmail.com} | +91-8506989793 |  \urlstyle{same}\href{https://linkedin.com/in/sarthak-agarwal-954330175}{LinkedIn}
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%     MAIN COVER LETTER CONTENT
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\currentdate{\today}
+\lettercontent{Dear PocketPills Hiring Team,}
+
+\lettercontent{I am writing to apply for the AI Engineer -- LLM \& Agentic AI role. My background building production-grade multi-agent systems at Dream11 Pulse directly aligns with your requirements: I have architected a 5-persona agentic platform (Planner, Executor, Summary, Report, RCA) using Google ADK and MCP, implemented dual-RAG with Qdrant for cross-database natural-language queries, and built a 65-case golden-dataset evaluation framework with 3-layer production guardrails.}
+
+\lettercontent{Here is how my experience maps to your key responsibilities:}
+
+{\raggedright\fontspec[Path = OpenFonts/fonts/raleway/]{Raleway-Medium}\fontsize{11pt}{13pt}\selectfont
+\begin{itemize}
+    \item \textbf{Multi-agent workflows \& tool calling:} Designed 5-persona agent layer with Features-as-Tools contract and MCP server exposing 47 tools across 9 domains; implemented dynamic tool routing, structured outputs, and context/memory management -- equivalent to LangChain/LangGraph patterns
+    \item \textbf{RAG systems \& vector search:} Built dual-RAG (XenoRAG) with embeddings, Qdrant vector search, retrieval optimization, and intelligent reranking for cross-DB NL queries across ClickHouse, Athena, S3, MySQL
+    \item \textbf{Evaluation frameworks \& observability:} Created 65+ case golden-dataset evaluation gate using Promptfoo/Google ADK with 80\% deploy threshold; integrated Braintrust; established 3-layer guardrails (PII redaction, anti-hallucination, leak defense)
+    \item \textbf{Production deployment \& infrastructure:} Deployed FastAPI backend on AWS EC2 with Docker, Terraform, and Jenkins CI/CD; built spec-to-ship workflow with Opus/Haiku advisor pattern adopted by 50-person team
+    \item \textbf{MCP \& observability expertise:} Built MCP server for 47 observability tools; hands-on with Google ADK (LangGraph-equivalent), LangSmith-equivalent observability platforms, and Model Context Protocol
+\end{itemize}\par}
+\vspace{6pt}
+
+\lettercontent{PocketPills' mission to transform pharmacy delivery through technology resonates with me. As a health-tech platform handling sensitive healthcare data, your need for production-grade AI guardrails, observability, and evaluation frameworks aligns exactly with what I have built -- systems where reliability and safety are non-negotiable. I am particularly drawn to the emphasis on agentic workflows and the opportunity to apply MCP and multi-agent architectures at scale in a domain where AI can directly improve patient outcomes.}
+
+\lettercontent{My behavioral strengths in autonomous problem-solving, cross-functional collaboration, and rapid iteration in ambiguous environments would complement a team building cutting-edge AI products. I thrive in engineering-driven cultures that value technical depth, modern tooling, and ownership from prototype to production.}
+
+\lettercontent{I look forward to hearing from you.}
+
+\begin{flushright}
+\closing{Kind regards,}
+
+\signature{Sarthak Agarwal}
+\end{flushright}
+\end{document}
