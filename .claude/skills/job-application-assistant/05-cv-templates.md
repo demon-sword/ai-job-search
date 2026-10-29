@@ -52,7 +52,7 @@ Expected output: `Output written on main_<company>_<role>.pdf (2 pages, ...)`. A
     linkcolor=blue,
     filecolor=magenta,
     urlcolor=blue,
-    pdftitle={[YOUR_NAME] - CV},
+    pdftitle={Sarthak Agarwal - CV},
     % Keep pdfpagemode=UseNone: this block runs after moderncv's own
     % \AtEndPreamble (moderncv.cls sets pdfpagemode there), so a FullScreen
     % value here would win and open every CV in fullscreen presentation mode.
@@ -62,13 +62,13 @@ Expected output: `Output written on main_<company>_<role>.pdf (2 pages, ...)`. A
 \usepackage{import}
 
 % Personal data
-\name{[FIRST_NAME]}{[LAST_NAME]}
+\name{Sarthak}{Agarwal}
 % If you have no address to list, DELETE this whole line. \address{}{}{} fails
 % with "There's no line here to end" on every moderncv version.
-\address{[YOUR_ADDRESS]}{}{}
-\phone[mobile]{[YOUR_PHONE]}
-\email{[YOUR_EMAIL]}
-\extrainfo{\href{[YOUR_LINKEDIN_URL]}{LinkedIn}, \href{[YOUR_GITHUB_URL]}{GitHub}}
+\address{Mumbai, India}{}{}
+\phone[mobile]{+91-8506989793}
+\email{sarthak01041998@gmail.com}
+\extrainfo{\href{https://linkedin.com/in/sarthak-agarwal-954330175}{LinkedIn}, \href{https://github.com/sarthak-d11}{GitHub}}
 
 \begin{document}
 \makecvtitle
@@ -130,11 +130,14 @@ When the role sits outside your home domain, **lead with the domain-transfer arg
 **Create 2-3 profile statement templates for your main role types:**
 
 <!-- SETUP: These are populated based on your background -->
-**For [YOUR_PRIMARY_ROLE_TYPE] roles:**
-> [YOUR_PROFILE_STATEMENT_TEMPLATE_1]
+**For AI Engineer / GenAI Engineer roles:**
+> AI Engineer with 2+ years building production GenAI systems at Dream11 Pulse. Architected PulseAI — a multi-tenant SaaS observability platform with a 5-persona multi-agent layer (Planner→Executor→Summary→Report) serving 9 domains via 47 MCP tools. Designed dual-RAG for cross-DB natural-language queries, built 65-case golden-dataset evaluation gate (Promptfoo/ADK) with 3-layer production guardrails (PII redaction, anti-hallucination, leak defense). Expert in Google ADK, MCP, LLM orchestration (Gemini/Claude), and agentic AI patterns. Seeking remote-first AI engineering role to build impactful GenAI products.
 
-**For [YOUR_SECONDARY_ROLE_TYPE] roles:**
-> [YOUR_PROFILE_STATEMENT_TEMPLATE_2]
+**For ML Engineer roles:**
+> ML Engineer with 2+ years at Dream11 building production ML/AI systems. Designed and deployed PulseAI's multi-agent observability platform with automated evaluation pipelines (65+ golden datasets, Promptfoo/ADK). Built RCA agents with Google ADK+MCP, dual-RAG for cross-database NL queries, and production guardrails. Strong in Python, ClickHouse, Qdrant, FastAPI, Docker/Terraform, CI/CD. Experience scaling mobile infrastructure (90% latency reduction, 60% APK size reduction). Seeking remote ML engineering role focused on model serving, MLOps, and AI platform engineering.
+
+**For Agent Engineer / Agentic AI roles:**
+> Agent Engineer specializing in multi-agent architectures and LLM orchestration. Built PulseAI's 5-persona agent system (Planner, Executor, Summary, Report, RCA) with Features-as-Tools contract and MCP tool platform (47 tools, 9 domains). Implemented spec-to-ship workflow with Opus/Haiku advisor pattern adopted by 50-person team. Deep expertise in Google ADK, MCP, dynamic tool routing, prompt engineering, and evaluation (Promptfoo, Braintrust). Seeking remote agentic AI role building autonomous agents and AI assistants.
 
 Statements labeled *[Used for: <company>_<role>]* were extracted from archived application drafts by `/setup` Path A. They are **phrasing references, never fact sources**: when drafting from one, every factual claim still comes from `01-candidate-profile.md` - a past tailored draft does not vouch for its own accuracy.
 
@@ -152,17 +155,17 @@ Use the posting's own core term in the matching bullet's bold label when it trut
 
 #### In-progress qualifications must say so explicitly
 
-**A bare year range is not enough.** An entry reading `2025–2026`, seen partway through 2026, looks like a *finished* degree, because a reader skimming a CV treats a closed range as closed. A profile statement that says "currently completing…" does not fix it: the education entry is where a reader checks the credential, so it has to stand on its own.
+**A bare year range is not enough.** An entry reading `2025-2026`, seen partway through 2026, looks like a *finished* degree, because a reader skimming a CV treats a closed range as closed. A profile statement that says "currently completing..." does not fix it: the education entry is where a reader checks the credential, so it has to stand on its own.
 
 State completion inside the entry itself:
 
 ```latex
-\item{\cventry{2025--2026}{[Degree], [Field]}{[Institution]}{[Location]}{}{\vspace{1pt}
+\item{\cventry{2025-2026}{[Degree], [Field]}{[Institution]}{[Location]}{}{\vspace{1pt}
 In progress, expected [Month Year]. [Relevant topics]
 }}
 ```
 
-Any consistent form works: `In progress, expected <Month Year>.` / `Expected completion <Month Year>.` / a date field of `2025–present`.
+Any consistent form works: `In progress, expected <Month Year>.` / `Expected completion <Month Year>.` / a date field of `2025-present`.
 
 Claiming a credential not yet held is a factual misstatement, and it is the kind discovered at transcript or reference check rather than at interview. It costs nothing to prevent. The same applies to in-progress certifications and courses.
 
@@ -177,17 +180,17 @@ Claiming a credential not yet held is a factual misstatement, and it is the kind
 
 Before finalizing, look at each role the way a stranger will: **date span versus how much work is shown.** A two-year role represented by a single project reads as low output, whether or not that is fair. The reader cannot know what filled the time, so they guess, and the guess is unflattering.
 
-This bites hardest on **career changers** (part of the tenure went into learning the new field), on **long-cycle work** (industrial deployment, clinical or regulatory projects, research — one delivery genuinely takes quarters), and on anyone whose employer kept them on a single account or product.
+This bites hardest on **career changers** (part of the tenure went into learning the new field), on **long-cycle work** (industrial deployment, clinical or regulatory projects, research -- one delivery genuinely takes quarters), and on anyone whose employer kept them on a single account or product.
 
 Three honest fixes, in order of preference:
 
 1. **Surface more real work.** Ask what else the period contained. There are often real secondary projects, internal tooling, or support work that never reached the CV because it felt minor. Best fix when the material exists.
-2. **Make the phases within the role explicit.** If the span genuinely had stages, say so — an initial period learning the domain or supporting the team, then ownership of the named work through to delivery. A phased arc reads as a growth curve; an undifferentiated multi-year block reads as stagnation.
+2. **Make the phases within the role explicit.** If the span genuinely had stages, say so -- an initial period learning the domain or supporting the team, then ownership of the named work through to delivery. A phased arc reads as a growth curve; an undifferentiated multi-year block reads as stagnation.
 3. **Name what made the cycle long.** Data collection from a live environment, validation with domain experts, deployment and iteration against real output. Reviewers who know the domain accept this immediately.
 
 **Never** pad with invented projects, and **never** quietly shorten the employment dates so the ratio looks better. Both are discoverable, and both are worse than the perception problem being solved.
 
-**Prepare the interview answer too.** If a long span against little visible output survives these fixes, the question is coming. The candidate needs a ready two-part answer — what actually filled the time, and what the outcome was — recorded in their interview prep rather than improvised in the room.
+**Prepare the interview answer too.** If a long span against little visible output survives these fixes, the question is coming. The candidate needs a ready two-part answer -- what actually filled the time, and what the outcome was -- recorded in their interview prep rather than improvised in the room.
 
 ### Handling Employment Gaps (Best Practice)
 If there is a gap in your employment history:
@@ -247,7 +250,7 @@ After writing the CV and before presenting to the user, always compile and visua
 Add `\needspace{5\baselineskip}` immediately before the problematic `\cventry`:
 ```latex
 \needspace{5\baselineskip}
-\item{\cventry{YEAR--YEAR}{Role Title}{Organization}{Location}{}{...}}
+\item{\cventry{YEAR-YEAR}{Role Title}{Organization}{Location}{}{...}}
 ```
 Include `\usepackage{needspace}` in the preamble.
 
@@ -257,10 +260,10 @@ Include `\usepackage{needspace}` in the preamble.
 Add `\enlargethispage{2-3\baselineskip}` before a late section (e.g., before `\section{Honors and Awards}`) to stretch page 2 by a few lines. This is the standard LaTeX rescue for near-miss overflows.
 
 **Problem: 3 pages with significant content on page 3**
-Cut content — do not compress geometry or `\vspace`. See "Relevance-weighted cutting" below for the rule.
+Cut content -- do not compress geometry or `\vspace`. See "Relevance-weighted cutting" below for the rule.
 
 **Problem: content finishes early on page 2 (feels thin)**
-Restore the highest-relevance item that was previously cut — a CV that ends mid-page 2 looks incomplete.
+Restore the highest-relevance item that was previously cut -- a CV that ends mid-page 2 looks incomplete.
 
 ## ATS Parseability
 
@@ -285,22 +288,22 @@ This one is worth knowing about because it fails **silently**. A CV that passes 
 
 Two independent causes, both easy to avoid:
 
-1. **`--` in a `\cventry` date renders as an en-dash (U+2013), not a hyphen.** LaTeX ligatures `--` (two ASCII hyphens, U+002D) into a single en-dash glyph, so `2016--2024` reaches the PDF text layer as `2016<U+2013>2024`. Many parsers split date ranges only on an ASCII hyphen and see no range at all. Write the date argument with a **single hyphen**:
+1. **`--` in a `\cventry` date renders as an en-dash (U+2013), not a hyphen.** LaTeX ligatures `--` (two ASCII hyphens, U+002D) into a single en-dash glyph, so `2016-2024` reaches the PDF text layer as `2016<U+2013>2024`. Many parsers split date ranges only on an ASCII hyphen and see no range at all. Write the date argument with a **single hyphen**:
 
-   ```latex
-   \item{\cventry{2016-2024}{Role Title}{Organization}{Location}{}{...}}   % parses
-   \item{\cventry{2016--2024}{Role Title}{Organization}{Location}{}{...}}  % en-dash, may not
-   ```
+    ```latex
+    \item{\cventry{2016-2024}{Role Title}{Organization}{Location}{}{...}}   % parses
+    \item{\cventry{2016--2024}{Role Title}{Organization}{Location}{}{...}}  % en-dash, may not
+    ```
 
-   This applies to the **date argument only**. Keep `--` everywhere it is typographically correct in prose, for example a numeric range like `EUR 600k--1M`.
+    This applies to the **date argument only**. Keep `--` everywhere it is typographically correct in prose, for example a numeric range like `EUR 600k-1M`.
 
 2. **A bare single year gives the parser no end date.** A short contract, mandate or internship written as `\cventry{2016}` imports as a start date with nothing to close it. Use an explicit range, with months where the role ran under a year:
 
-   ```latex
-   \item{\cventry{Mar 2016 - Jul 2016}{Contract Role}{Client}{Location}{}{...}}
-   ```
+    ```latex
+    \item{\cventry{Mar 2016 - Jul 2016}{Contract Role}{Client}{Location}{}{...}}
+    ```
 
-   Where a genuine range exists, use it even when a single year would be factually accurate - a degree written `1995` is true but imports worse than `1992-1995`. Do not invent a start date you do not have; a lone graduation year is fine, just expect it to be typed in by hand.
+    Where a genuine range exists, use it even when a single year would be factually accurate - a degree written `1995` is true but imports worse than `1992-1995`. Do not invent a start date you do not have; a lone graduation year is fine, just expect it to be typed in by hand.
 
 **Add this to the step 5d checks**: after extracting the text layer, confirm every experience entry shows a start *and* an end separated by an ASCII hyphen. Because the failure is silent and invisible in the PDF, the candidate otherwise discovers it only while filling in the application form.
 
@@ -328,16 +331,16 @@ The CV **must** fit on exactly 2 pages when compiled. Use these content limits a
 
 For every candidate line, score three things:
 
-1. **Relevance to THIS posting** — does the line hit a named tool, keyword, or stated responsibility in the job ad?
-2. **Uniqueness** — is it the only place this claim appears, or is it duplicated elsewhere in the CV?
-3. **Narrative load** — does the cover letter depend on it? If cutting the line would force you to rewrite a cover-letter paragraph, it is load-bearing.
+1. **Relevance to THIS posting** -- does the line hit a named tool, keyword, or stated responsibility in the job ad?
+2. **Uniqueness** -- is it the only place this claim appears, or is it duplicated elsewhere in the CV?
+3. **Narrative load** -- does the cover letter depend on it? If cutting the line would force you to rewrite a cover-letter paragraph, it is load-bearing.
 
 Cut the lowest-total-score line first, regardless of which section it sits in.
 
-### Practical order of cuts (easiest → last resort)
+### Practical order of cuts (easiest to last resort)
 
 1. **Redundancy.** If an achievement appears in both Core Competencies AND a role bullet, the Core Competencies version is usually the cleaner cut (the experience bullet is more concrete evidence).
-2. **Profile-statement fluff.** A sentence that just restates what Publications or Skills will show. ("Peer-reviewed publications on X..." is already a Publications entry — profile can claim it once and stop.)
+2. **Profile-statement fluff.** A sentence that just restates what Publications or Skills will show. ("Peer-reviewed publications on X..." is already a Publications entry -- profile can claim it once and stop.)
 3. **Low-relevance experience bullets.** A bullet about work that does not touch posting keywords, wherever it sits. This cuts across sections before touching the structural list.
 4. **Low-relevance supporting content.** An older-role bullet that does not speak to the target role. A certification that does not touch the posting's stack. A language entry that can be condensed to one line.
 5. **Low-relevance publications.** Keep 1-2 publications that best match the posting. Cut the rest before touching experience bullets.
@@ -346,7 +349,7 @@ Cut the lowest-total-score line first, regardless of which section it sits in.
 ### Pitfalls to avoid
 
 - Do not mechanically cut from the bottom of a static section list without checking relevance. "Cut the oldest role first" is wrong if that role is literally about the skill the posting asks for.
-- Do not cut the one concrete example the cover letter leans on. Relevance is measured against the cover letter you wrote, not just the job posting — interviewers will have read both.
+- Do not cut the one concrete example the cover letter leans on. Relevance is measured against the cover letter you wrote, not just the job posting -- interviewers will have read both.
 - Do not cut to fit if the fit is borderline (2.02 pages). Prefer `\enlargethispage{2-3\baselineskip}` on a late section for near-misses; reserve content cuts for genuine overflow (content on page 3 that is more than a single trailing section).
 
 ## Recommended Section Order
