@@ -1,0 +1,8 @@
+{
+  "_comment": "EXAMPLE ONLY. Copy to answers.locked.json (gitignored), fill in real answers, have the captain review. Keys must match requiredAnswers in approved-queue.json. Empty or missing values abort the submit - answers are never invented.",
+  "work_authorization_in": "Example: Indian citizen, authorized to work in India without sponsorship",
+  "work_authorization_us": "Example: US work authorization status as reviewed with captain",
+  "notice_period_days": "Example: 30",
+  "remote_india_yes": "Example: Yes - home office in India with overlap to US hours",
+  "remote_us_yes": "Example: Yes - available for US remote collaboration hours"
+}

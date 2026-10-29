@@ -116,3 +116,10 @@ company_research/*.json
 
 # Brainstorm mockups (superpowers visual companion) - never ship
 .superpowers/
+
+# Wellfound apply pilot runtime state: the captain-reviewed locked answers,
+# per-submit receipts, and confirmation screenshots. The queue file and the
+# answers example template stay tracked; only live state is ignored.
+.agents/skills/wellfound-apply/pilot/answers.locked.json
+.agents/skills/wellfound-apply/pilot/receipts/*.jsonl
+.agents/skills/wellfound-apply/pilot/receipts/*.png

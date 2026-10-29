@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "jobs": [
+    {
+      "job": "certa-sdet-india",
+      "company": "Certa",
+      "role": "Software Development Engineer in Test (SDET)",
+      "url": "https://wellfound.com/jobs/2894265-software-development-engineer-in-test-sdet",
+      "status": "queued",
+      "cvPdf": null,
+      "coverPdf": null,
+      "requiredAnswers": ["work_authorization_in", "notice_period_days", "remote_india_yes"],
+      "approvedBy": null,
+      "approvedAt": null,
+      "notes": "India-remote Wellfound posting. Captain confirms this is the right requisition, then /apply-tailors CV + cover letter before approval."
+    },
+    {
+      "job": "certa-tpm-us",
+      "company": "Certa",
+      "role": "Technical Project Manager",
+      "url": "https://wellfound.com/jobs/4762770-technical-project-manager",
+      "status": "queued",
+      "cvPdf": null,
+      "coverPdf": null,
+      "requiredAnswers": ["work_authorization_us", "notice_period_days", "remote_us_yes"],
+      "approvedBy": null,
+      "approvedAt": null,
+      "notes": "US-remote Wellfound posting. Captain confirms this is the right requisition, then /apply-tailors CV + cover letter before approval."
+    }
+  ]
+}
