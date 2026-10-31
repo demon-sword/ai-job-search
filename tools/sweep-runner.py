@@ -9,12 +9,12 @@ dedupe, triage, artifact + tracker + state writes) is delegated to
 to archive or upload.
 
 Usage:
-    python3 .github/workflows/sweep-auto.py            # run only when due
-    python3 .github/workflows/sweep-auto.py --force    # run regardless
-    python3 .github/workflows/sweep-auto.py --date 2026-10-31 --force
+    python3 tools/sweep-runner.py            # run only when due
+    python3 tools/sweep-runner.py --force    # run regardless
+    python3 tools/sweep-runner.py --date 2026-10-31 --force
 
 Cron example (weekly Monday 09:00; the cadence gate below decides):
-    0 9 * * 1 cd /path/to/ai-job-search && python3 .github/workflows/sweep-auto.py
+    0 9 * * 1 cd /path/to/ai-job-search && python3 tools/sweep-runner.py
 
 Note: discovery shells out to the portal CLIs, and the linkedin-search skill
 is personal-use only per its own ToS warning - schedule this where the
@@ -27,7 +27,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent.parent
+ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import sweep_auto  # noqa: E402  (repo-local tool, resolved via ROOT above)
 
@@ -70,7 +70,11 @@ def main(argv=None):
     if not artifact.exists():
         print(f"sweep-auto: sweep exited 0 but {artifact} is missing", file=sys.stderr)
         return 1
-    print(f"artifact={artifact.relative_to(ROOT)}")
+    try:
+        shown = artifact.relative_to(ROOT)
+    except ValueError:  # --artifacts outside the repo: print the absolute path
+        shown = artifact
+    print(f"artifact={shown}")
     return 0
 
 
