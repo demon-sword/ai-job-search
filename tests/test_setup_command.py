@@ -9,8 +9,13 @@ were not, so a full Path B/C run left `[YOUR_NAME]`, `[YOUR_EMAIL]` and
 on the drafter noticing. A real user (#420) ran `/setup` and then hand-edited both
 files to close the gap.
 """
+import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
+
+UPSTREAM = "MadsLorentzen/ai-job-search"
 
 REPO = Path(__file__).resolve().parent.parent
 COMMAND = REPO / ".claude" / "commands" / "setup.md"
@@ -67,6 +72,10 @@ class SetupStep3ContactBlocks(unittest.TestCase):
         self.assertIn("06-cover-letter-templates.md", summary)
 
 
+@unittest.skipIf(
+    os.environ.get("GITHUB_REPOSITORY", UPSTREAM) != UPSTREAM,
+    "placeholder-integrity guards the pristine upstream template; forks personalize these files via /setup",
+)
 class TemplatesStillCarryThePlaceholders(unittest.TestCase):
     """The instructions above target real tokens; if a template renames them,
     the instruction and this test must move together."""
@@ -81,6 +90,25 @@ class TemplatesStillCarryThePlaceholders(unittest.TestCase):
         for token in ("[YOUR_NAME]", "[YOUR_EMAIL]", "[YOUR_PHONE]", "[YOUR_LINKEDIN_URL]"):
             self.assertIn(token, text)
         self.assertIn("\\signature{[YOUR_NAME]}", text)
+
+
+class ForkSkipRegression(unittest.TestCase):
+    """TemplatesStillCarryThePlaceholders must skip (not fail) on forks.
+
+    Regression test for the red fork-CI run: the placeholder assertions
+    only hold on the pristine upstream template, so under a fork
+    GITHUB_REPOSITORY the class must report skipped and exit 0.
+    """
+
+    def test_placeholder_class_skips_on_forks(self):
+        env = dict(os.environ, GITHUB_REPOSITORY="someone/fork")
+        proc = subprocess.run(
+            [sys.executable, "-m", "unittest",
+             "tests.test_setup_command.TemplatesStillCarryThePlaceholders", "-v"],
+            capture_output=True, text=True, cwd=REPO, env=env,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr[-2000:])
+        self.assertIn("skipped", proc.stderr)
 
 
 if __name__ == "__main__":
