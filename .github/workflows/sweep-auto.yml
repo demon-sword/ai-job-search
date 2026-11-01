@@ -1,12 +1,14 @@
 # Scheduled autonomous sweep: discovery, content-hash dedupe, triage, artifact.
 #
-# Weekly on the default branch; the runner's own cadence gate (default 14 days)
-# decides whether a scheduled tick actually sweeps, so most ticks exit quietly.
-# Manual dispatch stays available with an optional force flag.
+# Daily at 09:00 UTC on the default branch; the runner's own cadence gate
+# (default 1 day) decides whether a scheduled tick actually sweeps, so
+# same-day re-ticks exit quietly. Manual dispatch stays available with an
+# optional force flag.
 #
-# Note: discovery shells out to the portal CLIs, and the linkedin-search skill
-# is personal-use only per its own ToS warning - only enable this schedule
-# where the operator's own session runs it, not on shared CI runners.
+# Posture (decided 2026-11-01): the operator explicitly accepted running
+# this schedule - all portals including linkedin-search - from their own
+# fork CI runners daily. Note the linkedin-search skill is personal-use
+# only per its own ToS warning; that acceptance covers this fork's runners.
 # Schedules only fire on the default branch; a fork arms this by merging it.
 # Actions are pinned to commit SHAs; the token is read-only.
 
@@ -14,7 +16,7 @@ name: Scheduled sweep
 
 on:
   schedule:
-    - cron: "0 9 * * 1" # Monday 09:00 UTC
+    - cron: "0 9 * * *" # Daily 09:00 UTC
   workflow_dispatch:
     inputs:
       force:

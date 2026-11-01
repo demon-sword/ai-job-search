@@ -13,12 +13,13 @@ Usage:
     python3 tools/sweep-runner.py --force    # run regardless
     python3 tools/sweep-runner.py --date 2026-10-31 --force
 
-Cron example (weekly Monday 09:00; the cadence gate below decides):
-    0 9 * * 1 cd /path/to/ai-job-search && python3 tools/sweep-runner.py
+Cron example (daily 09:00; the cadence gate below decides):
+    0 9 * * * cd /path/to/ai-job-search && python3 tools/sweep-runner.py
 
 Note: discovery shells out to the portal CLIs, and the linkedin-search skill
-is personal-use only per its own ToS warning - schedule this where the
-operator's own session runs (local cron), not on shared CI runners.
+is personal-use only per its own ToS warning. Posture (decided 2026-11-01):
+the operator explicitly accepted running this daily from their own fork CI
+runners, all portals included.
 """
 
 import argparse
@@ -31,6 +32,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import sweep_auto  # noqa: E402  (repo-local tool, resolved via ROOT above)
 
+# Daily cadence to match the scheduled workflow tick: every day with no
+# recorded run sweeps; same-day re-ticks exit quietly. (tools/sweep_auto.py
+# keeps its own 14-day default for direct CLI use.)
+RUNNER_CADENCE_DAYS = 1
+
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -38,7 +44,7 @@ def parse_args(argv=None):
                     help="run even when the cadence window has not elapsed")
     ap.add_argument("--date", default=None,
                     help="run date YYYY-MM-DD (default today)")
-    ap.add_argument("--cadence-days", type=int, default=sweep_auto.CADENCE_DAYS)
+    ap.add_argument("--cadence-days", type=int, default=RUNNER_CADENCE_DAYS)
     ap.add_argument("--seen", default=str(sweep_auto.SEEN))
     ap.add_argument("--tracker", default=str(sweep_auto.TRACKER))
     ap.add_argument("--state", default=str(sweep_auto.SCHEDULER_STATE))

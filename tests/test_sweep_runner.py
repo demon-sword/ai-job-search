@@ -63,5 +63,27 @@ class ArtifactDisplay(unittest.TestCase):
         self.assertEqual(rc, 3)
 
 
+class RunnerCadence(unittest.TestCase):
+    def test_default_cadence_is_one_day(self):
+        self.assertEqual(sweep_runner.RUNNER_CADENCE_DAYS, 1)
+        self.assertEqual(sweep_runner.parse_args([]).cadence_days, 1)
+
+    def test_yesterday_run_is_due_today_run_is_not(self):
+        import datetime as dt
+
+        sys.path.insert(0, str(REPO / "tools"))
+        import sweep_auto
+        today = dt.date(2026, 11, 1).isoformat()
+        yesterday = dt.date(2026, 10, 31).isoformat()
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp) / "state.json"
+            cadence = sweep_runner.parse_args([]).cadence_days
+            self.assertTrue(sweep_auto.is_due(cadence, today=today, state_path=state))
+            sweep_auto.record_run(yesterday, state)
+            self.assertTrue(sweep_auto.is_due(cadence, today=today, state_path=state))
+            sweep_auto.record_run(today, state)
+            self.assertFalse(sweep_auto.is_due(cadence, today=today, state_path=state))
+
+
 if __name__ == "__main__":
     unittest.main()
