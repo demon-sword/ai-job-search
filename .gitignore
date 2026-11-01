@@ -26,6 +26,8 @@ salary_data.json
 **/job_scraper/seen_jobs.json
 **/job_scraper/notion_sync.json
 **/job_scraper/*.md
+# Runtime sweep state (local run marker, not personal data).
+job_scraper/sweep_auto_state.json
 *_BehavioralReport.pdf
 linkedin_Profile.pdf
 
