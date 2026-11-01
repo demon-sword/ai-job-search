@@ -144,6 +144,75 @@ class UnexpectedUI(InviteStop):
 _CHALLENGE_URL = re.compile(r"/checkpoint/challenge", re.I)
 _AUTHWALL_URL = re.compile(r"authwall|/login|/uas/login", re.I)
 
+# People-search card extraction deliberately avoids class selectors:
+# LinkedIn serves obfuscated, rotating classes (b6bayf-style), so the only
+# stable hooks are the /in/ profile hrefs and the card's ordered text lines.
+# The browser returns raw (url, link text, lines); parse_search_card below
+# turns lines into fields in pure Python, which is what the tests pin.
+SEARCH_CARDS_JS = """() => {
+    const seen = new Set();
+    const cards = [];
+    for (const link of document.querySelectorAll('main a[href*="/in/"]')) {
+        const href = (link.href || '').split('?')[0];
+        if (!href || seen.has(href)) continue;
+        seen.add(href);
+        let scope = link;
+        for (let depth = 0; depth < 8; depth++) {
+            const parent = scope.parentElement;
+            if (!parent || parent === document.body) break;
+            scope = parent;
+            if ((scope.innerText || '').length > 200) break;
+        }
+        const lines = (scope.innerText || '').split('\\n')
+            .map(s => s.trim()).filter(Boolean).slice(0, 12);
+        cards.push({profile_url: href, link_text: (link.innerText || '').trim(), lines});
+        if (cards.length >= 10) break;
+    }
+    return cards;
+}"""
+
+PLACE_RE = re.compile(r"^.{2,90}$")
+_BADGE_RE = re.compile(r"^•")
+_BUTTON_LINES = {"follow", "connect", "message", "pending"}
+
+
+def looks_like_place(line: str, places) -> bool:
+    """A location line is comma-separated AND names somewhere inside the
+    search lens. Shape alone misfires ("Sales Executive, FMCG" is shaped
+    like a place); the lens vocabulary comes from the targets config, so
+    this stays data-driven, not hardcoded."""
+    text = line.strip()
+    if not PLACE_RE.match(text) or "," not in text:
+        return False
+    lowered = text.lower()
+    return any(place in lowered for place in places if place)
+
+
+def parse_search_card(profile_url: str, link_text: str, lines: list, places=()) -> dict:
+    """Turn one card's ordered text lines into a candidate. Name comes from
+    the profile link (cut at the • degree badge); headline is the next line;
+    location is the line after that when it names somewhere inside the
+    search lens. A thin card (location where the headline should be, then a
+    Follow/Connect button) is detected and the headline left empty so the
+    profile-view enrichment can fill it."""
+    texts = [str(line).strip() for line in (lines or []) if str(line).strip()]
+    name = link_text.split("•")[0].strip() if link_text else ""
+    if not name and texts:
+        name = texts[0].split("•")[0].strip()
+        texts = texts[1:]
+    elif name and texts and (texts[0] == name or texts[0].startswith(name + " ") or "•" in texts[0][: len(name) + 4]):
+        # The scope's first line is the name line itself ("Name", "Name • 2nd").
+        texts = texts[1:]
+    rest = [line for line in texts if not _BADGE_RE.match(line)]
+    headline = rest[0] if rest else ""
+    location = ""
+    if rest:
+        if len(rest) > 1 and looks_like_place(rest[0], places) and rest[1].lower() in _BUTTON_LINES:
+            location, headline = rest[0], ""
+        elif len(rest) > 1 and looks_like_place(rest[1], places):
+            location = rest[1]
+    return {"profile_url": profile_url, "name": name, "headline": headline, "location": location}
+
 
 def classify_interstitial(url: str, title: str, body: str) -> InviteStop | None:
     """Map an observed page state to a fatal stop signal, or None when clear.
@@ -365,8 +434,9 @@ class PlaywrightDriver(InviteDriver):
     """Live LinkedIn driver. Created only for --live runs; the import stays
     lazy so dry runs, planning, and tests never need Playwright installed."""
 
-    def __init__(self, profile_dir: Path):
+    def __init__(self, profile_dir: Path, places=()):
         self.profile_dir = profile_dir
+        self._places = [str(p).lower() for p in places or [] if str(p).strip()]
         self._pw = None
         self._ctx = None
 
@@ -507,29 +577,30 @@ class PlaywrightDriver(InviteDriver):
         driver_page = self._checked_goto(url, "people-search")
         try:
             try:
-                cards = driver_page.evaluate(
-                    """() => Array.from(
-                        document.querySelectorAll('.reusable-search__result-container')
-                    ).map(card => {
-                        const link = card.querySelector('a[href*="/in/"]');
-                        const sub = card.querySelector('.entity-result__primary-subtitle');
-                        const loc = card.querySelector('.entity-result__secondary-subtitle');
-                        return {
-                            profile_url: link ? link.href.split('?')[0] : '',
-                            name: link ? link.innerText.trim() : '',
-                            headline: sub ? sub.innerText.trim() : '',
-                            location: loc ? loc.innerText.trim() : '',
-                        };
-                    })"""
-                )
+                raw = driver_page.evaluate(SEARCH_CARDS_JS)
             except Exception as exc:
                 raise UnexpectedUI(f"could not read search results: {exc}") from exc
+            cards = []
+            for entry in raw or []:
+                if not isinstance(entry, dict) or not entry.get("profile_url"):
+                    continue
+                try:
+                    cards.append(
+                        parse_search_card(
+                            entry["profile_url"],
+                            entry.get("link_text") or "",
+                            entry.get("lines") or [],
+                            self._places,
+                        )
+                    )
+                except Exception as exc:
+                    raise UnexpectedUI(f"could not parse a search card: {exc}") from exc
             if not cards:
                 body = (driver_page.evaluate("() => document.body ? document.body.innerText : ''") or "").lower()
                 if "no results" in body or "no matches" in body or "0 results" in body:
                     return []
                 raise UnexpectedUI("people-search page has no result cards and no empty-state message")
-            return [dict(c) for c in cards if isinstance(c, dict) and c.get("profile_url")]
+            return cards
         finally:
             try:
                 driver_page.close()
@@ -1088,7 +1159,7 @@ def cmd_discover(args) -> int:
     day = today_str()
 
     def factory():
-        return PlaywrightDriver(args.profile_dir)
+        return PlaywrightDriver(args.profile_dir, places=cfg.get("location_allow", []))
 
     try:
         summary = run_discover(

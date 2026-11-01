@@ -40,6 +40,7 @@ from tools.linkedin_connect import (
     load_cache,
     load_ledger,
     pace_delay,
+    parse_search_card,
     queued_today,
     run_discover,
     run_queue,
@@ -541,7 +542,10 @@ class Secrets(BotCase):
 
 class StatusAndPlan(BotCase):
     def test_status_reports_quota_math(self):
-        self.ledger["sends"] = [f"{DAY}T08:00:00+05:30"] * 3
+        from datetime import datetime
+
+        today = datetime.now().astimezone().date().isoformat()
+        self.ledger["sends"] = [f"{today}T08:00:00+05:30"] * 3
         self.ledger["persons"] = {"in:a": {"status": "invited"}}
         path = self.state / "ledger.json"
         save_ledger(path, self.ledger)
@@ -551,6 +555,7 @@ class StatusAndPlan(BotCase):
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)
         out = json.loads(proc.stdout)
+        self.assertEqual(out["day"], today)
         self.assertEqual(out["sent_today"], 3)
         self.assertEqual(out["remaining_today"], 17)
         self.assertEqual(out["persons_by_status"], {"invited": 1})
@@ -575,6 +580,78 @@ class StatusAndPlan(BotCase):
         out = json.loads(proc.stdout)
         self.assertEqual([r["decision"] for r in out["rows"]], ["invite", "skip"])
         self.assertFalse(self.state.exists(), "plan must not write any state")
+
+
+class ParseSearchCard(unittest.TestCase):
+    """parse_search_card fixtures are transcribed from the live people-search
+    page captured during diagnosis (obfuscated b6bayf-style classes, hence
+    the structure-based extraction). Unknown LinkedIn markup must parse to
+    fields the scorer can use - or to empty fields that earn a profile view,
+    never to shifted garbage."""
+
+    PLACES = ["india", "remote", "bengaluru", "pune", "noida", "delhi",
+              "maharashtra", "karnataka", "uttar pradesh", "haryana", "gurugram"]
+
+    def test_full_card_parses_name_headline_location(self):
+        card = parse_search_card(
+            "https://www.linkedin.com/in/lazar-selvaras/",
+            "Lazar Selvaras • 2nd",
+            ["Lazar Selvaras • 2nd",
+             "TA Agile Strategist, Career Enabler and Recruiting Evangelist, General Manager - TA & Strategy, Swiggy",
+             "Bengaluru, Karnataka, India",
+             "Follow",
+             "General Manager TA - Tech/Leadership Hiring at Swiggy since April 2025."],
+            self.PLACES,
+        )
+        self.assertEqual(card["name"], "Lazar Selvaras")
+        self.assertTrue(card["headline"].startswith("TA Agile Strategist"))
+        self.assertEqual(card["location"], "Bengaluru, Karnataka, India")
+
+    def test_degree_badge_never_leaks_into_fields(self):
+        card = parse_search_card(
+            "https://www.linkedin.com/in/x/", "Ankita Yajnik • 2nd",
+            ["Ankita Yajnik • 2nd", "• 2nd",
+             "Senior Specialist, Technical Recruiter - India, South Asia @ Mastercard",
+             "Pune District, Maharashtra, India", "Follow"],
+            self.PLACES,
+        )
+        self.assertEqual(card["name"], "Ankita Yajnik")
+        self.assertNotIn("•", card["headline"])
+        self.assertEqual(card["location"], "Pune District, Maharashtra, India")
+
+    def test_thin_card_leaves_headline_empty_for_enrichment(self):
+        card = parse_search_card(
+            "https://www.linkedin.com/in/y/", "Y",
+            ["Y", "Noida, Uttar Pradesh, India", "Follow"],
+            self.PLACES,
+        )
+        self.assertEqual(card["headline"], "", "a location in the headline slot must not pose as one")
+        self.assertEqual(card["location"], "Noida, Uttar Pradesh, India")
+
+    def test_non_place_third_line_means_no_location(self):
+        card = parse_search_card(
+            "https://www.linkedin.com/in/z/", "Z",
+            ["Z", "Sales Executive, FMCG", "Follow"],
+            self.PLACES,
+        )
+        self.assertEqual(card["headline"], "Sales Executive, FMCG")
+        self.assertEqual(card["location"], "")
+
+    def test_location_outside_the_lens_is_not_claimed(self):
+        card = parse_search_card(
+            "https://www.linkedin.com/in/w/", "W",
+            ["W", "Tech Recruiter", "London, United Kingdom", "Follow"],
+            self.PLACES,
+        )
+        self.assertEqual(card["headline"], "Tech Recruiter")
+        self.assertEqual(card["location"], "", "outside-lens places stay empty rather than guessed")
+
+    def test_extraction_query_uses_stable_hooks_not_classes(self):
+        from tools.linkedin_connect import SEARCH_CARDS_JS
+
+        self.assertIn('a[href*="/in/"]', SEARCH_CARDS_JS)
+        self.assertNotIn("reusable-search", SEARCH_CARDS_JS)
+        self.assertNotIn("entity-result", SEARCH_CARDS_JS)
 
 
 class DiscoverySeeds(BotCase):
@@ -782,7 +859,7 @@ class DiscoveryCli(BotCase):
         targets = mini_targets(self.tmp, discovery={"max_pages": 1})
         driver = FakeDriver(searches=[[search_card("a")], [search_card("b")]])
         real_driver = mod.PlaywrightDriver
-        mod.PlaywrightDriver = lambda profile_dir: driver
+        mod.PlaywrightDriver = lambda profile_dir, **kw: driver
         try:
             args = build_parser().parse_args([
                 "discover", "--targets", str(targets), "--state-dir", str(self.state),
@@ -804,7 +881,7 @@ class DiscoveryCli(BotCase):
 
         targets = mini_targets(self.tmp)
         real_driver = mod.PlaywrightDriver
-        mod.PlaywrightDriver = lambda profile_dir: FakeDriver(searches=[RateLimited("slow down")])
+        mod.PlaywrightDriver = lambda profile_dir, **kw: FakeDriver(searches=[RateLimited("slow down")])
         try:
             args = build_parser().parse_args([
                 "discover", "--targets", str(targets), "--state-dir", str(self.state),
