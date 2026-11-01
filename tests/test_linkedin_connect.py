@@ -17,6 +17,8 @@ from tempfile import TemporaryDirectory
 
 from tools.linkedin_connect import (
     DISCOVERY_STATUSES,
+    FOLLOW_ONLY,
+    RUN_SKIP_STATUSES,
     TERMINAL_STATUSES,
     CaptchaChallenge,
     InviteDriver,
@@ -31,6 +33,8 @@ from tools.linkedin_connect import (
     canonical_key,
     check_note,
     classify_interstitial,
+    classify_invite_entry,
+    normalize_button_name,
     cmd_discover,
     cmd_run,
     discovery_defaults,
@@ -905,6 +909,46 @@ class DiscoveryCli(BotCase):
             capture_output=True, text=True,
         )
         self.assertNotEqual(proc.returncode, 0)
+
+
+class InviteEntry(BotCase):
+    def test_normalize_strips_icon_glyphs_but_never_collapses(self):
+        self.assertEqual(normalize_button_name("+ Follow"), "Follow")
+        self.assertEqual(normalize_button_name("  Connect  "), "Connect")
+        self.assertEqual(normalize_button_name("Invite Arnab Banerjee to connect"),
+                         "Invite Arnab Banerjee to connect")
+        self.assertEqual(normalize_button_name(""), "")
+        self.assertEqual(normalize_button_name(None), "")
+
+    def test_decision_table(self):
+        self.assertEqual(classify_invite_entry(["Connect", "Message", "More"]), "connect")
+        self.assertEqual(classify_invite_entry(["Connect", "Follow"]), "connect",
+                         "an exact Connect always wins; Follow co-presence changes nothing")
+        self.assertEqual(classify_invite_entry(["+ Follow", "Message", "More"]), "follow_only",
+                         "the observed creator-mode row, icon glyph included")
+        self.assertEqual(classify_invite_entry(["Message", "More"]), "unknown",
+                         "anything else stays fail-closed")
+        self.assertEqual(classify_invite_entry([]), "unknown")
+        self.assertEqual(classify_invite_entry(["Invite X to connect"]), "unknown",
+                         "a More-menu invite line never counts as a Connect control")
+
+    def test_follow_only_skips_with_reason_and_consumes_no_cap(self):
+        summary = self.run_live([cand("f"), cand("s")], script=[FOLLOW_ONLY, "sent"])
+        self.assertEqual(summary["sent"], 1)
+        self.assertEqual(summary["skipped"], 1)
+        self.assertEqual(self.ledger["persons"]["in:f"]["status"], FOLLOW_ONLY)
+        self.assertEqual(len(self.ledger["sends"]), 1, "the skip consumed no cap")
+        reasons = [r["reason"] for r in summary["decisions"] if r["decision"] == "skip"]
+        self.assertTrue(any("follow-only" in reason for reason in reasons))
+
+    def test_follow_only_is_never_requeued(self):
+        self.ledger["persons"] = {"in:f": {"status": FOLLOW_ONLY, "last_ts": NOW}}
+        self.assertIn(FOLLOW_ONLY, RUN_SKIP_STATUSES)
+        self.assertIn(FOLLOW_ONLY, DISCOVERY_STATUSES)
+        summary = self.run_live([cand("f")])
+        self.assertEqual(summary["sent"], 0)
+        self.assertEqual(summary["skipped"], 1)
+        self.assertEqual(self.driver.calls, [])
 
 
 class LedgerHandoff(BotCase):

@@ -141,6 +141,43 @@ class UnexpectedUI(InviteStop):
     loud = "LinkedIn showed an unexpected page state (no Connect control, no known badge)"
 
 
+def normalize_button_name(raw: str) -> str:
+    """Normalize one control name for comparison. Visible names carry icon
+    glyphs ("+ Follow") that exact matching would otherwise miss; the strip
+    is leading-symbols-only, so "Invite X to connect" never collapses onto
+    "Connect" and a loose match can never click a wrong control again."""
+    text = re.sub(r"\s+", " ", str(raw or "")).strip()
+    return re.sub(r"^[^A-Za-z0-9]+", "", text)
+
+
+def classify_invite_entry(names) -> str:
+    """Classify a profile's top-card action row from normalized control
+    names. Callers pass the card-scoped set (see PlaywrightDriver: anchored
+    on the card's Contact-info link, never page-wide, so a suggested
+    profile's Connect can never be mistaken for this profile's).
+
+    'connect' means a Connect control exists and the dialog flow may
+    proceed. 'follow_only' means a Follow control exists but no Connect -
+    a creator-mode profile that can never receive an invite; it is skipped
+    with a reason, never force-clicked. Anything else is 'unknown' and stays
+    a fail-closed UnexpectedUI. Message may co-occur with Follow on open
+    2nd-degree profiles, so it never implies anything here.
+    """
+    normalized = {normalize_button_name(name) for name in names or []}
+    normalized.discard("")
+    if "Connect" in normalized:
+        return "connect"
+    if "Follow" in normalized:
+        return "follow_only"
+    return "unknown"
+
+
+FOLLOW_ONLY = "follow_only"
+# run skips these without sending; discovery never re-queues them.
+RUN_SKIP_STATUSES = TERMINAL_STATUSES | {FOLLOW_ONLY}
+DISCOVERY_STATUSES = TERMINAL_STATUSES | {"queued", FOLLOW_ONLY}
+
+
 _CHALLENGE_URL = re.compile(r"/checkpoint/challenge", re.I)
 _AUTHWALL_URL = re.compile(r"authwall|/login|/uas/login", re.I)
 
@@ -482,16 +519,36 @@ class PlaywrightDriver(InviteDriver):
                     return "already_connected"
             except Exception as exc:
                 raise UnexpectedUI(f"could not read message button: {exc}") from exc
-            connect = page.get_by_role("button", name=re.compile(r"Invite .* to connect|Connect", re.I)).first
+            # Card-scoped, normalized-name matching. The card is anchored on
+            # its Contact-info link (a UI staple), so a suggested profile's
+            # Connect elsewhere on the page can never be mistaken for this
+            # profile's - clicking that would invite a stranger. Names come
+            # from aria-labels with innerText fallback, then normalized
+            # ("+ Follow" -> "Follow"); "Invite X to connect" never
+            # collapses onto "Connect". A Connect hidden under More is
+            # deliberately NOT pursued: its menu item cannot be identified
+            # without guessing, and guessing is what broke this.
+            anchor = page.get_by_text("Contact info", exact=True).first
             try:
-                if connect.count() == 0:
-                    more = page.get_by_role("button", name=re.compile(r"^More", re.I)).first
-                    if more.count() == 0:
-                        raise UnexpectedUI("no Connect control and no More menu on profile")
-                    more.click(timeout=10000)
-                    connect = page.get_by_role("button", name=re.compile(r"Invite .* to connect|Connect", re.I)).first
-                    if connect.count() == 0:
-                        raise UnexpectedUI("no Connect entry even under More")
+                has_anchor = anchor.count() > 0
+            except Exception as exc:
+                raise UnexpectedUI(f"could not read top-card actions: {exc}") from exc
+            if not has_anchor:
+                raise UnexpectedUI("profile top card has no Contact-info anchor")
+            try:
+                card = anchor.locator("xpath=./ancestor-or-self::*[.//button][1]")
+                raw_names = card.get_by_role("button").evaluate_all(
+                    "els => els.map(e => e.getAttribute('aria-label') || e.innerText || '')"
+                )
+            except Exception as exc:
+                raise UnexpectedUI(f"could not read top-card actions: {exc}") from exc
+            entry = classify_invite_entry(raw_names or [])
+            if entry == "follow_only":
+                return FOLLOW_ONLY
+            if entry == "unknown":
+                raise UnexpectedUI("no Connect control and no Follow control on profile")
+            connect = card.get_by_role("button", name=re.compile(r"^\W*Connect\s*$", re.I)).first
+            try:
                 connect.click(timeout=10000)
                 page.wait_for_timeout(1500)
             except InviteStop:
@@ -645,7 +702,6 @@ class PlaywrightDriver(InviteDriver):
 
 
 CACHE_NAME = "discovery_cache.json"
-DISCOVERY_STATUSES = TERMINAL_STATUSES | {"queued"}
 
 
 def discovery_defaults(cfg: dict) -> dict:
@@ -805,7 +861,7 @@ def run_queue(
                 summary["decisions"].append(record)
                 continue
             known = (ledger.get("persons", {}) or {}).get(key)
-            if known and known.get("status") in TERMINAL_STATUSES:
+            if known and known.get("status") in RUN_SKIP_STATUSES:
                 summary["skipped"] += 1
                 record = {
                     "ts": timestamp, "profile": key, "name": candidate.get("name"),
@@ -879,14 +935,25 @@ def run_queue(
                 person["status"] = "invited"
             elif outcome == "already_connected":
                 person["status"] = "connected"
+            elif outcome == FOLLOW_ONLY:
+                person["status"] = FOLLOW_ONLY
             else:
                 person["status"] = str(outcome)
             ledger.setdefault("persons", {})[key] = person
-            record = {
-                "ts": timestamp, "profile": key, "name": candidate.get("name"),
-                "decision": "send", "result": outcome, "reason": "; ".join(reasons),
-                "score": score, "live": True,
-            }
+            if outcome == FOLLOW_ONLY:
+                summary["skipped"] += 1
+                record = {
+                    "ts": timestamp, "profile": key, "name": candidate.get("name"),
+                    "decision": "skip", "result": outcome,
+                    "reason": "follow-only profile (creator mode): no Connect control, never force-clicked",
+                    "score": score, "live": True,
+                }
+            else:
+                record = {
+                    "ts": timestamp, "profile": key, "name": candidate.get("name"),
+                    "decision": "send", "result": outcome, "reason": "; ".join(reasons),
+                    "score": score, "live": True,
+                }
             append_audit(audit_path, record)
             summary["decisions"].append(record)
     finally:
