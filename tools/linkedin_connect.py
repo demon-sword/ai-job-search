@@ -172,6 +172,35 @@ def classify_invite_entry(names) -> str:
     return "unknown"
 
 
+def classify_entry_from_texts(lines) -> str | None:
+    """Second opinion from the card's visible text lines: an exact "Connect"
+    line means connect, an exact "Follow" line with no Connect line means
+    follow_only, anything else is None (no opinion). Used against the
+    accessible-name signal by resolve_entry; never drives a click alone."""
+    texts = [normalize_button_name(line) for line in lines or []]
+    if "Connect" in texts:
+        return "connect"
+    if "Follow" in texts:
+        return "follow_only"
+    return None
+
+
+def resolve_entry(acc_entry: str, text_entry: str | None) -> str:
+    """Combine the accessible-name signal with the visible-text signal.
+
+    Clicks require an acc-verified control, so text alone never yields
+    connect. Skips are safe, so a lone follow_only signal suffices. Genuine
+    conflicts and double silence stay fail-closed unknown.
+    """
+    if acc_entry == "connect" and text_entry in ("connect", None):
+        return "connect"
+    if acc_entry == "follow_only" and text_entry in ("follow_only", None):
+        return "follow_only"
+    if acc_entry == "unknown" and text_entry == "follow_only":
+        return "follow_only"
+    return "unknown"
+
+
 FOLLOW_ONLY = "follow_only"
 # run skips these without sending; discovery never re-queues them.
 RUN_SKIP_STATUSES = TERMINAL_STATUSES | {FOLLOW_ONLY}
@@ -540,9 +569,15 @@ class PlaywrightDriver(InviteDriver):
                 raw_names = card.get_by_role("button").evaluate_all(
                     "els => els.map(e => e.getAttribute('aria-label') || e.innerText || '')"
                 )
+                try:
+                    card_text = card.evaluate("(el) => el.innerText || ''")
+                except Exception:
+                    card_text = ""
             except Exception as exc:
                 raise UnexpectedUI(f"could not read top-card actions: {exc}") from exc
-            entry = classify_invite_entry(raw_names or [])
+            acc_entry = classify_invite_entry(raw_names or [])
+            text_entry = classify_entry_from_texts((card_text or "").splitlines())
+            entry = resolve_entry(acc_entry, text_entry)
             if entry == "follow_only":
                 return FOLLOW_ONLY
             if entry == "unknown":

@@ -73,7 +73,7 @@ discover-queued profiles instead (and composes with `--candidates`).
 |------|-----|
 | Hard daily cap of 20 | Counted from `linkedin_connect/ledger.json`, which survives restarts. `--max-per-day` can only lower it; anything above 20 is refused. Discovery queues at most 20 new profiles per day too (`--max-queued`, same ceiling). |
 | Dry-run default | Without `--live` no browser starts and the ledger is untouched. Discovery dry-run is fully read-only: it scores the cache and writes nothing — no cache, ledger, or audit entries. |
-| Instant full stop, exit 2 | Any login challenge, captcha, verification prompt, rate-limit response, or unexpected UI aborts the run with no retry and a loud stderr report. Discovery applies the same classifier to every search and profile page. |
+| Instant full stop, exit 2 | Any login challenge, captcha, verification prompt, rate-limit response, or unexpected UI aborts the run with no retry and a loud stderr report. Discovery applies the same classifier to every search and profile page. Invite entry is dual-signal (accessible names + card text, card-scoped): agreement acts, conflict or double silence stops. |
 | Human-like pacing + window | Jittered 60–180 s pause between invites (tunable down, never off); jittered 8–20 s pause between discovery fetches; anything outside `--window` (default 09:00–21:00 local) is refused. |
 | Discovery budgets | At most 3 seeded searches, 2 pages each, 5 profile views per run (all tunable down in the targets file). Raw pages are cached in `linkedin_connect/discovery_cache.json` so a re-run re-scores from disk and never re-scrapes. |
 | Append-only audit log | `linkedin_connect/audit.jsonl`: who, why they matched, timestamp, result. Never rewritten. |

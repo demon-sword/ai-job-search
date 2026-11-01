@@ -32,9 +32,11 @@ from tools.linkedin_connect import (
     cache_key,
     canonical_key,
     check_note,
+    classify_entry_from_texts,
     classify_interstitial,
     classify_invite_entry,
     normalize_button_name,
+    resolve_entry,
     cmd_discover,
     cmd_run,
     discovery_defaults,
@@ -949,6 +951,47 @@ class InviteEntry(BotCase):
         self.assertEqual(summary["sent"], 0)
         self.assertEqual(summary["skipped"], 1)
         self.assertEqual(self.driver.calls, [])
+
+
+class DualSignalEntry(unittest.TestCase):
+    """Second-signal tests. The Follow-heavy fixture is transcribed from the
+    captured diag_invite button dump of a real Follow-primary profile (which
+    carries no Connect string at all); the Connect fixture mirrors a normal
+    top-card row. Both live in-test because the diag dir itself is gitignored
+    runtime state."""
+
+    CAPTURED_FOLLOW_ROW = [
+        "Skip to search", "Skip to main content", "Skip to primary content",
+        "Skip to aside", "Skip to footer", "Home", "Me", "For Business",
+        "More", "Follow", "Follow", "More", "Follow", "… more", "Follow",
+        "… more", "1", "", "… more", "3", "… more", "2",
+    ]
+
+    def test_captured_follow_row_classifies_follow_only(self):
+        self.assertEqual(classify_entry_from_texts(self.CAPTURED_FOLLOW_ROW), "follow_only")
+
+    def test_captured_follow_row_resolves_without_acc_signal(self):
+        self.assertEqual(resolve_entry("unknown", "follow_only"), "follow_only",
+                         "the exact live failure: empty acc read plus Follow text must skip, not stop")
+
+    def test_connect_row_classifies_connect(self):
+        self.assertEqual(classify_entry_from_texts(["More", "Message", "Connect"]), "connect")
+
+    def test_text_alone_never_drives_a_click(self):
+        self.assertEqual(resolve_entry("unknown", "connect"), "unknown",
+                         "no acc-verified control means no click target")
+
+    def test_conflicts_and_silence_stay_fail_closed(self):
+        for acc, text in [("connect", "follow_only"), ("follow_only", "connect"),
+                          ("unknown", None), ("unknown", "unknown")]:
+            with self.subTest(acc=acc, text=text):
+                self.assertEqual(resolve_entry(acc, text), "unknown")
+
+    def test_agreement_passes_through(self):
+        self.assertEqual(resolve_entry("connect", "connect"), "connect")
+        self.assertEqual(resolve_entry("follow_only", "follow_only"), "follow_only")
+        self.assertEqual(resolve_entry("connect", None), "connect")
+        self.assertEqual(resolve_entry("follow_only", None), "follow_only")
 
 
 class LedgerHandoff(BotCase):
