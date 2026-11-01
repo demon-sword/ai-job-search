@@ -23,8 +23,13 @@ per-file diff commands.
   daily cap of 20 from a durable ledger, instant stop (exit 2, no retry) on
   login/captcha/verification/rate-limit/unexpected-UI states, jittered pacing
   inside a daily window, append-only audit log, dedupe across restarts, and no
-  credentials in the repo (local browser profile only). Personal use only:
-  automated invites violate LinkedIn's ToS.
+  credentials in the repo (local browser profile only). The `discover`
+  subcommand finds profiles itself from role-seed x GenAI-domain keywords in
+  the targets file (no company mining, no pasted URLs), queuing at most 20
+  new profiles/day behind strict search/page/profile-view budgets, a local
+  page cache, and the same stop/window/dry-run discipline; `run
+  --from-ledger` invites the queued profiles. Personal use only: automated
+  invites violate LinkedIn's ToS, and discovery raises the risk further.
 
 - **`/expand` project and portfolio expansion** (`.claude/commands/expand.md`,
   `tests/test_expand_command.py`) - expands candidate discovery

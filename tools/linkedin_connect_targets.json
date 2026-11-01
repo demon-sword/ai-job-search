@@ -54,5 +54,27 @@
     "hyderabad",
     "pune",
     "chennai"
-  ]
+  ],
+  "discovery": {
+    "_comment": "Seed keywords for the discover subcommand: role-title seeds combined with the domain_signals above and the location lens below. Listed order is priority order - execution stops at max_searches. No company-list mining, no pasted URLs in v1.",
+    "max_searches": 3,
+    "max_pages": 2,
+    "max_profile_views": 5,
+    "max_queued_per_day": 20,
+    "search_min_delay": 8.0,
+    "search_max_delay": 20.0,
+    "role_seeds": [
+      "recruiter",
+      "hiring manager",
+      "engineering manager",
+      "talent acquisition",
+      "head of engineering",
+      "CTO"
+    ],
+    "locations": [
+      "India",
+      "Remote",
+      "Delhi"
+    ]
+  }
 }

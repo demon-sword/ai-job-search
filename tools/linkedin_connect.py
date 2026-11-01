@@ -41,7 +41,10 @@ connected - both are recorded, neither counts toward the cap.
 
 Usage:
   python3 tools/linkedin_connect.py plan --candidates queue.json
+  python3 tools/linkedin_connect.py discover                            # dry-run: what would be searched/queued
+  python3 tools/linkedin_connect.py discover --live                     # search people-search, queue matches
   python3 tools/linkedin_connect.py run --candidates queue.json        # dry-run
+  python3 tools/linkedin_connect.py run --from-ledger --live            # invite discover-queued profiles
   python3 tools/linkedin_connect.py run --candidates queue.json --live  # sends
   python3 tools/linkedin_connect.py status
   python3 tools/linkedin_connect.py login                               # one-time manual login
@@ -342,6 +345,18 @@ class InviteDriver:
         challenge, captcha, verification, rate-limit, or unexpected UI."""
         raise NotImplementedError
 
+    def search_people(self, keywords: str, location: str, page: int) -> list[dict]:
+        """One LinkedIn people-search page. Returns card dicts with
+        profile_url/name/headline/location (fields may be empty). Raises
+        InviteStop on any challenge, captcha, verification, rate-limit, or
+        unexpected UI. No retries."""
+        raise NotImplementedError
+
+    def view_profile(self, profile_url: str) -> dict:
+        """Fetch one profile's headline/location to enrich a search card.
+        Raises InviteStop like every other driver call. No retries."""
+        raise NotImplementedError
+
     def close(self) -> None:
         raise NotImplementedError
 
@@ -459,6 +474,186 @@ class PlaywrightDriver(InviteDriver):
             except Exception:
                 pass
         self._ctx, self._pw = None, None
+
+    def _checked_goto(self, url: str, candidate: str) -> object:
+        """Open a page and fail closed on anything but the expected UI."""
+        page = self._ctx.new_page()
+        try:
+            try:
+                page.goto(url, wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(2500)
+            except Exception as exc:
+                page.close()
+                raise UnexpectedUI(f"{candidate} page did not load: {exc}") from exc
+            stop = self._page_state(page)
+            if stop is not None:
+                page.close()
+                raise stop
+            return page
+        except InviteStop:
+            raise
+        except Exception as exc:
+            try:
+                page.close()
+            except Exception:
+                pass
+            raise UnexpectedUI(f"{candidate} page did not behave: {exc}") from exc
+
+    def search_people(self, keywords: str, location: str, page: int) -> list[dict]:
+        import urllib.parse
+
+        params = urllib.parse.urlencode({"keywords": keywords, "origin": "GLOBAL_SEARCH_HEADER", "page": page})
+        url = f"https://www.linkedin.com/search/results/people/?{params}"
+        driver_page = self._checked_goto(url, "people-search")
+        try:
+            try:
+                cards = driver_page.evaluate(
+                    """() => Array.from(
+                        document.querySelectorAll('.reusable-search__result-container')
+                    ).map(card => {
+                        const link = card.querySelector('a[href*="/in/"]');
+                        const sub = card.querySelector('.entity-result__primary-subtitle');
+                        const loc = card.querySelector('.entity-result__secondary-subtitle');
+                        return {
+                            profile_url: link ? link.href.split('?')[0] : '',
+                            name: link ? link.innerText.trim() : '',
+                            headline: sub ? sub.innerText.trim() : '',
+                            location: loc ? loc.innerText.trim() : '',
+                        };
+                    })"""
+                )
+            except Exception as exc:
+                raise UnexpectedUI(f"could not read search results: {exc}") from exc
+            if not cards:
+                body = (driver_page.evaluate("() => document.body ? document.body.innerText : ''") or "").lower()
+                if "no results" in body or "no matches" in body or "0 results" in body:
+                    return []
+                raise UnexpectedUI("people-search page has no result cards and no empty-state message")
+            return [dict(c) for c in cards if isinstance(c, dict) and c.get("profile_url")]
+        finally:
+            try:
+                driver_page.close()
+            except Exception:
+                pass
+
+    def view_profile(self, profile_url: str) -> dict:
+        driver_page = self._checked_goto(profile_url, "profile")
+        try:
+            try:
+                data = driver_page.evaluate(
+                    """() => {
+                        const pick = (sels) => {
+                            for (const sel of sels) {
+                                const el = document.querySelector(sel);
+                                if (el && el.innerText.trim()) return el.innerText.trim();
+                            }
+                            return '';
+                        };
+                        return {
+                            headline: pick([
+                                '.text-body-medium.break-words',
+                                '.pv-text-details__left-panel .text-body-medium',
+                            ]),
+                            location: pick([
+                                '.text-body-small.inline.t-black--light.break-words',
+                                '.pv-text-details__left-panel .text-body-small',
+                            ]),
+                        };
+                    }"""
+                )
+            except Exception as exc:
+                raise UnexpectedUI(f"could not read profile header: {exc}") from exc
+            if not isinstance(data, dict) or not (data.get("headline") or data.get("location")):
+                raise UnexpectedUI("profile header has neither headline nor location")
+            return {"headline": data.get("headline") or "", "location": data.get("location") or ""}
+        finally:
+            try:
+                driver_page.close()
+            except Exception:
+                pass
+
+
+CACHE_NAME = "discovery_cache.json"
+DISCOVERY_STATUSES = TERMINAL_STATUSES | {"queued"}
+
+
+def discovery_defaults(cfg: dict) -> dict:
+    """Budgets and seeds for discover, from the targets file's discovery
+    section. Low by design: discovery traffic is what gets accounts flagged."""
+    section = cfg.get("discovery", {}) or {}
+    if not isinstance(section, dict):
+        sys.exit("targets file: discovery must be an object")
+    return {
+        "max_searches": int(section.get("max_searches", 3)),
+        "max_pages": int(section.get("max_pages", 2)),
+        "max_profile_views": int(section.get("max_profile_views", 5)),
+        "max_queued_per_day": int(section.get("max_queued_per_day", HARD_DAILY_CAP)),
+        "search_min_delay": float(section.get("search_min_delay", 8.0)),
+        "search_max_delay": float(section.get("search_max_delay", 20.0)),
+        "role_seeds": section.get("role_seeds", []) or [],
+        "locations": section.get("locations", []) or [],
+    }
+
+
+def discovery_queries(cfg: dict) -> list[dict]:
+    """Seeded discovery queries: role-title seeds x the GenAI domain terms
+    already in this targets file x the location lens. Configurable data, not
+    hardcoded names: reordering the seeds reprioritises the searches, and
+    execution stops at max_searches, so listed order is priority order. No
+    company-list mining and no pasted URLs in v1 - these seeds are the only
+    discovery source."""
+    defaults = discovery_defaults(cfg)
+    domains = [str(d).strip() for d in cfg.get("domain_signals", []) or [] if str(d).strip()]
+    roles = [str(r).strip() for r in defaults["role_seeds"] if str(r).strip()]
+    locations = [str(loc).strip() for loc in defaults["locations"] if str(loc).strip()]
+    queries = []
+    for domain in domains or [""]:
+        for location in locations or [""]:
+            for role in roles:
+                keywords = " ".join(part for part in (role, domain, location) if part)
+                queries.append({"keywords": keywords, "role": role, "domain": domain, "location": location})
+    return queries
+
+
+def queued_today(ledger: dict, day: str) -> int:
+    """Persons newly queued by discovery today - the discovery-side cap that
+    mirrors the invite cap."""
+    count = 0
+    for person in (ledger.get("persons", {}) or {}).values():
+        if person.get("status") == "queued" and str(person.get("last_ts") or "")[:10] == day:
+            count += 1
+    return count
+
+
+def load_cache(path: Path) -> dict:
+    """Discovery cache: raw search pages keyed by query+location+page, so a
+    re-run re-scores from disk and never re-scrapes LinkedIn."""
+    if not path.is_file():
+        return {"version": 1, "pages": {}}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        sys.exit(f"{path} is not valid JSON: {exc}")
+    if not isinstance(data, dict) or not isinstance(data.get("pages"), dict):
+        sys.exit(f"{path}: expected a cache object with a pages map")
+    return data
+
+
+def save_cache(path: Path, cache: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".discovery.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(cache, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
+def cache_key(keywords: str, location: str, page: int) -> str:
+    return f"{keywords}\n{location}\n{page}"
 
 
 def pace_delay(min_delay: float, max_delay: float, rng: random.Random) -> float:
@@ -595,7 +790,15 @@ def run_queue(
                 summary["decisions"].append(record)
                 summary["stopped"] = stop.signal
                 raise
-            person = {"status": None, "last_ts": timestamp, "score": score, "reasons": reasons}
+            prev = (ledger.get("persons", {}) or {}).get(key, {})
+            person = {
+                "status": None,
+                "last_ts": timestamp,
+                "score": score,
+                "reasons": reasons,
+                "profile_url": candidate.get("profile_url") or prev.get("profile_url"),
+                "name": candidate.get("name") or prev.get("name"),
+            }
             if outcome == "sent":
                 person["status"] = "invited"
                 ledger["sends"].append(timestamp)
@@ -621,6 +824,226 @@ def run_queue(
     return summary
 
 
+def run_discover(
+    queries: list[dict],
+    cfg: dict,
+    ledger: dict,
+    cache: dict,
+    audit_path: Path,
+    *,
+    live: bool,
+    day: str,
+    window: str,
+    max_searches: int,
+    max_pages: int,
+    max_profile_views: int,
+    max_queued: int,
+    search_min_delay: float,
+    search_max_delay: float,
+    driver_factory=None,
+    sleeper=None,
+    rng: random.Random | None = None,
+    now_iso: str | None = None,
+) -> dict:
+    """Execute one discovery pass: search people-search, score the cards with
+    the invite matcher's score_candidate, and queue matches in the ledger for
+    a later run to invite. Returns a summary; raises InviteStop on any safety
+    signal.
+
+    Dry-run (live=False) is read-only: it reads the cache, scores what is
+    cached, and prints what it WOULD search and WOULD queue. It writes no
+    cache, no ledger, and no audit entries. Live runs append raw pages to
+    the cache, mark matches queued in the ledger, and audit every decision.
+    """
+    rng = rng or random.Random()
+    timestamp = now_iso or utcnow_iso()
+    summary: dict = {
+        "live": live,
+        "day": day,
+        "searches_executed": 0,
+        "pages_fetched": 0,
+        "profile_views": 0,
+        "cache_hits": 0,
+        "queued": 0,
+        "skipped": 0,
+        "deferred": 0,
+        "stopped": None,
+        "decisions": [],
+    }
+
+    if not inside_window(window):
+        summary["stopped"] = "outside_window"
+        return summary
+
+    min_score = float(cfg.get("min_score", 0))
+    driver = None
+    if live:
+        if driver_factory is None:
+            raise ValueError("live discovery needs a driver factory")
+        driver = driver_factory()
+        driver.start()
+
+    def audit(record: dict) -> None:
+        if live:
+            append_audit(audit_path, record)
+
+    fetches = 0
+    try:
+        for query in queries[: max(0, max_searches)]:
+            keywords = query["keywords"]
+            location = query.get("location") or ""
+            for page in range(1, max(0, max_pages) + 1):
+                key = cache_key(keywords, location, page)
+                if key in (cache.get("pages", {}) or {}):
+                    results = cache["pages"][key].get("results", [])
+                    summary["cache_hits"] += 1
+                elif not live:
+                    record = {
+                        "ts": timestamp, "decision": "would-search",
+                        "keywords": keywords, "location": location, "page": page, "live": False,
+                    }
+                    summary["decisions"].append(record)
+                    break
+                else:
+                    if fetches > 0:
+                        delay = pace_delay(search_min_delay, search_max_delay, rng)
+                        (sleeper or (lambda s: __import__("time").sleep(s)))(delay)
+                    try:
+                        results = driver.search_people(keywords, location, page)
+                    except InviteStop as stop:
+                        record = {
+                            "ts": timestamp, "decision": "stop",
+                            "reason": f"{stop.signal}: {stop}",
+                            "keywords": keywords, "live": True,
+                        }
+                        audit(record)
+                        summary["decisions"].append(record)
+                        summary["stopped"] = stop.signal
+                        raise
+                    fetches += 1
+                    summary["searches_executed"] += 1
+                    summary["pages_fetched"] += 1
+                    cache.setdefault("pages", {})[key] = {"ts": timestamp, "results": results}
+                    if not results:
+                        break
+                for card in results:
+                    summary["decisions"].append(
+                        handle_card(
+                            card, query, cfg, ledger, min_score, live, timestamp,
+                            day, max_queued, max_profile_views, driver, summary, audit,
+                        )
+                    )
+                    if summary["stopped"] == "queue_cap_reached":
+                        break
+                if summary["stopped"] == "queue_cap_reached":
+                    break
+        summary["deferred"] = max(0, len(queries) - max(0, max_searches))
+    finally:
+        if driver is not None:
+            driver.close()
+    return summary
+
+
+def handle_card(
+    card: dict,
+    query: dict,
+    cfg: dict,
+    ledger: dict,
+    min_score: float,
+    live: bool,
+    timestamp: str,
+    day: str,
+    max_queued: int,
+    max_profile_views: int,
+    driver,
+    summary: dict,
+    audit,
+) -> dict:
+    """Score one search card and queue, skip, or defer it. Returns the
+    decision record (also appended to summary counts by the caller)."""
+    candidate = {
+        "profile_url": card.get("profile_url") or "",
+        "name": card.get("name") or "",
+        "headline": card.get("headline") or "",
+        "location": card.get("location") or "",
+    }
+    try:
+        key = canonical_key(candidate["profile_url"])
+    except ValueError as exc:
+        summary["skipped"] += 1
+        record = {"ts": timestamp, "decision": "skip", "reason": f"unkeyable card: {exc}", "live": live}
+        audit(record)
+        return record
+    known = (ledger.get("persons", {}) or {}).get(key)
+    if known and known.get("status") in DISCOVERY_STATUSES:
+        summary["skipped"] += 1
+        record = {
+            "ts": timestamp, "profile": key, "name": candidate["name"],
+            "decision": "skip", "reason": f"dedupe: already {known['status']}", "live": live,
+        }
+        audit(record)
+        return record
+    # A card without a headline cannot be scored fairly - the signal usually
+    # lives in the headline - so thin cards earn a profile view (while the
+    # view budget lasts) before the threshold check, not after.
+    if live and not candidate["headline"] and summary["profile_views"] < max(0, max_profile_views):
+        try:
+            enriched = driver.view_profile(candidate["profile_url"])
+        except InviteStop as stop:
+            record = {
+                "ts": timestamp, "profile": key, "name": candidate["name"],
+                "decision": "stop", "reason": f"{stop.signal}: {stop}", "live": True,
+            }
+            audit(record)
+            summary["decisions"].append(record)
+            summary["stopped"] = stop.signal
+            raise
+        summary["profile_views"] += 1
+        candidate["headline"] = enriched.get("headline") or candidate["headline"]
+        candidate["location"] = enriched.get("location") or candidate["location"]
+    score, reasons = score_candidate(candidate, cfg)
+    if score < min_score:
+        summary["skipped"] += 1
+        record = {
+            "ts": timestamp, "profile": key, "name": candidate["name"],
+            "decision": "skip", "reason": f"below threshold ({score:g} < {min_score:g})",
+            "score": score, "live": live,
+        }
+        audit(record)
+        return record
+    if not live:
+        summary["queued"] += 1
+        return {
+            "ts": timestamp, "profile": key, "name": candidate["name"],
+            "decision": "would-queue", "reason": "; ".join(reasons),
+            "score": score, "live": False,
+        }
+    if queued_today(ledger, day) >= max(1, max_queued):
+        summary["stopped"] = "queue_cap_reached"
+        return {
+            "ts": timestamp, "profile": key, "name": candidate["name"],
+            "decision": "defer", "reason": f"daily queue cap reached ({max_queued})", "live": True,
+        }
+    ledger.setdefault("persons", {})[key] = {
+        "status": "queued",
+        "last_ts": timestamp,
+        "score": score,
+        "reasons": reasons,
+        "profile_url": candidate["profile_url"],
+        "name": candidate["name"],
+        "headline": candidate["headline"],
+        "location": candidate["location"],
+    }
+    summary["queued"] += 1
+    record = {
+        "ts": timestamp, "profile": key, "name": candidate["name"],
+        "decision": "queue", "reason": "; ".join(reasons),
+        "score": score, "keywords": query["keywords"], "live": True,
+    }
+    audit(record)
+    return record
+
+
 def load_candidates(path: Path) -> list[dict]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -631,6 +1054,79 @@ def load_candidates(path: Path) -> list[dict]:
     if not isinstance(data, list) or not all(isinstance(c, dict) for c in data):
         sys.exit(f"candidates file {path} must be a JSON array of objects")
     return data
+
+
+def cmd_discover(args) -> int:
+    cfg = load_targets(args.targets)
+    defaults = discovery_defaults(cfg)
+    max_searches = args.max_searches if args.max_searches is not None else defaults["max_searches"]
+    max_pages = args.max_pages if args.max_pages is not None else defaults["max_pages"]
+    max_views = args.max_profile_views if args.max_profile_views is not None else defaults["max_profile_views"]
+    max_queued = args.max_queued if args.max_queued is not None else defaults["max_queued_per_day"]
+    search_min = args.search_min_delay if args.search_min_delay is not None else defaults["search_min_delay"]
+    search_max = args.search_max_delay if args.search_max_delay is not None else defaults["search_max_delay"]
+    for name, value in [("max_searches", max_searches), ("max_pages", max_pages),
+                        ("max_profile_views", max_views), ("max_queued", max_queued)]:
+        if value < 1:
+            sys.exit(f"--{name.replace('_', '-')} must be at least 1")
+    if max_queued > HARD_DAILY_CAP:
+        sys.exit(f"--max-queued {max_queued} exceeds the hard daily cap of {HARD_DAILY_CAP} - refusing")
+    if search_min < 0 or search_max < search_min:
+        sys.exit(f"bad search delay window [{search_min}, {search_max}]")
+    try:
+        parse_window(args.window)
+    except ValueError as exc:
+        sys.exit(str(exc))
+    queries = discovery_queries(cfg)
+    if not queries:
+        sys.exit("targets file: discovery has no role_seeds to search from")
+    ledger_path = args.state_dir / LEDGER_NAME
+    cache_path = args.state_dir / CACHE_NAME
+    audit_path = args.state_dir / AUDIT_NAME
+    ledger = load_ledger(ledger_path)
+    cache = load_cache(cache_path)
+    day = today_str()
+
+    def factory():
+        return PlaywrightDriver(args.profile_dir)
+
+    try:
+        summary = run_discover(
+            queries, cfg, ledger, cache, audit_path, live=args.live, day=day,
+            window=args.window, max_searches=max_searches, max_pages=max_pages,
+            max_profile_views=max_views, max_queued=max_queued,
+            search_min_delay=search_min, search_max_delay=search_max,
+            driver_factory=factory,
+        )
+    except InviteStop as stop:
+        save_ledger(ledger_path, ledger)
+        save_cache(cache_path, cache)
+        print(f"BOT STOPPED - {stop.loud}: {stop}", file=sys.stderr)
+        print(f"Ledger and cache saved. No further searches attempted. Audit: {audit_path}", file=sys.stderr)
+        return EXIT_STOPPED
+
+    if args.live:
+        save_ledger(ledger_path, ledger)
+        save_cache(cache_path, cache)
+        print(f"live discovery: {summary['queued']} queued, {summary['skipped']} skipped, "
+              f"{summary['searches_executed']} searches, {summary['profile_views']} profile views, "
+              f"{summary['cache_hits']} cache hits.")
+    else:
+        for row in summary["decisions"]:
+            if row["decision"] == "would-search":
+                print(f"WOULD SEARCH people for {row['keywords']!r} ({row['location'] or 'anywhere'})")
+            elif row["decision"] == "would-queue":
+                print(f"WOULD QUEUE {row.get('name') or row['profile']} [{row['profile']}] ({row['reason']})")
+        print(f"dry-run: {summary['queued']} would-queue, {summary['skipped']} skipped - "
+              "nothing searched, nothing queued, nothing written.")
+    if summary["stopped"] == "queue_cap_reached":
+        print(f"daily queue cap reached ({max_queued}) - further matches deferred to tomorrow.")
+    if summary["stopped"] == "outside_window":
+        print(f"refused: outside the daily window {args.window} - nothing searched.", file=sys.stderr)
+        return 1
+    if summary["deferred"]:
+        print(f"{summary['deferred']} lower-priority seed queries deferred by the search budget.")
+    return 0
 
 
 def cmd_plan(args) -> int:
@@ -678,10 +1174,27 @@ def cmd_run(args) -> int:
     if args.min_delay < 0 or args.max_delay < args.min_delay:
         sys.exit(f"bad delay window [{args.min_delay}, {args.max_delay}]")
     cfg = load_targets(args.targets)
-    candidates = load_candidates(args.candidates)
     ledger_path = args.state_dir / LEDGER_NAME
     audit_path = args.state_dir / AUDIT_NAME
     ledger = load_ledger(ledger_path)
+    if args.from_ledger:
+        candidates = []
+        for person in (ledger.get("persons", {}) or {}).values():
+            if person.get("status") == "queued" and person.get("profile_url"):
+                candidates.append({
+                    "profile_url": person["profile_url"],
+                    "name": person.get("name") or "",
+                    "headline": person.get("headline") or "",
+                    "location": person.get("location") or "",
+                })
+        if args.candidates is not None:
+            candidates.extend(load_candidates(args.candidates))
+        if not candidates:
+            print("no queued profiles in the ledger - run discover first or pass --candidates.")
+    elif args.candidates is None:
+        sys.exit("pass --candidates queue.json or --from-ledger for discover-queued profiles")
+    else:
+        candidates = load_candidates(args.candidates)
     day = today_str()
 
     def factory():
@@ -780,8 +1293,24 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--candidates", type=Path, required=True)
     plan.set_defaults(func=cmd_plan)
 
+    discover = sub.add_parser("discover", parents=[common],
+                                      help="find profiles via people search and queue matches (dry-run unless --live)")
+    discover.add_argument("--live", action="store_true", help="explicit operator flag: actually search and queue")
+    discover.add_argument("--max-searches", type=int, default=None)
+    discover.add_argument("--max-pages", type=int, default=None)
+    discover.add_argument("--max-profile-views", type=int, default=None)
+    discover.add_argument("--max-queued", type=int, default=None)
+    discover.add_argument("--search-min-delay", type=float, default=None)
+    discover.add_argument("--search-max-delay", type=float, default=None)
+    discover.add_argument("--window", default=DEFAULT_WINDOW, help='daily window "HH:MM-HH:MM" local time')
+    discover.add_argument("--profile-dir", type=Path,
+                          default=Path.home() / ".linkedin-connect-bot" / "profile")
+    discover.set_defaults(func=cmd_discover)
+
     run = sub.add_parser("run", parents=[common], help="run the queue (dry-run unless --live)")
-    run.add_argument("--candidates", type=Path, required=True)
+    run.add_argument("--candidates", type=Path, default=None)
+    run.add_argument("--from-ledger", action="store_true",
+                     help="invite discover-queued profiles from the ledger (composes with --candidates)")
     run.add_argument("--live", action="store_true", help="explicit operator flag: actually send invites")
     run.add_argument("--max-per-day", type=int, default=HARD_DAILY_CAP)
     run.add_argument("--limit", type=int, default=0, help="cap decisions this run (0 = no run cap)")

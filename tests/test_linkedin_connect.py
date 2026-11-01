@@ -16,6 +16,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tools.linkedin_connect import (
+    DISCOVERY_STATUSES,
     TERMINAL_STATUSES,
     CaptchaChallenge,
     InviteDriver,
@@ -26,15 +27,23 @@ from tools.linkedin_connect import (
     VerificationPrompt,
     append_audit,
     build_parser,
+    cache_key,
     canonical_key,
     check_note,
     classify_interstitial,
+    cmd_discover,
     cmd_run,
+    discovery_defaults,
+    discovery_queries,
     effective_cap,
     inside_window,
+    load_cache,
     load_ledger,
     pace_delay,
+    queued_today,
+    run_discover,
     run_queue,
+    save_cache,
     save_ledger,
     score_candidate,
     scrub,
@@ -62,9 +71,13 @@ def cand(slug, headline="Tech Recruiter, GenAI hiring", location="Remote", name=
 class FakeDriver(InviteDriver):
     """Scripted driver: each send pops the next outcome, or raises it."""
 
-    def __init__(self, script):
-        self.script = list(script)
+    def __init__(self, script=None, searches=None, views=None):
+        self.script = list(script or ["sent"])
+        self.searches = list(searches or [])
+        self.views = list(views or [])
         self.calls = []
+        self.search_calls = []
+        self.view_calls = []
         self.started = False
         self.closed = False
 
@@ -78,8 +91,61 @@ class FakeDriver(InviteDriver):
             raise item
         return item
 
+    def search_people(self, keywords, location, page):
+        self.search_calls.append((keywords, location, page))
+        item = self.searches.pop(0) if self.searches else []
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def view_profile(self, profile_url):
+        self.view_calls.append(profile_url)
+        item = self.views.pop(0) if self.views else {}
+        if isinstance(item, Exception):
+            raise item
+        return item
+
     def close(self):
         self.closed = True
+
+
+def search_card(slug, headline="Tech Recruiter, GenAI hiring", location="Bengaluru, India", name=None):
+    return {
+        "profile_url": f"https://www.linkedin.com/in/{slug}/",
+        "name": name or slug,
+        "headline": headline,
+        "location": location,
+    }
+
+
+def seed_query(keywords="recruiter genai India", location="India"):
+    return {"keywords": keywords, "role": "recruiter", "domain": "genai", "location": location}
+
+
+def mini_targets(tmp, **over):
+    """Small discovery config so CLI tests run 2 seeded queries, not 252."""
+    cfg = {
+        "min_score": 4,
+        "role_signals": [{"match": "recruiter", "weight": 4, "tag": "recruiter"}],
+        "domain_weight": 1,
+        "domain_signals": ["genai"],
+        "location_weight": 1,
+        "location_allow": ["india", "remote"],
+        "discovery": {
+            "max_searches": 2,
+            "max_pages": 2,
+            "max_profile_views": 5,
+            "max_queued_per_day": 20,
+            "search_min_delay": 0,
+            "search_max_delay": 0,
+            "role_seeds": ["recruiter", "hiring manager"],
+            "locations": ["India"],
+        },
+    }
+    cfg["discovery"].update(over.get("discovery", {}))
+    path = tmp / "targets.json"
+    path.write_text(json.dumps(cfg), encoding="utf-8")
+    return path
 
 
 class BotCase(unittest.TestCase):
@@ -509,6 +575,288 @@ class StatusAndPlan(BotCase):
         out = json.loads(proc.stdout)
         self.assertEqual([r["decision"] for r in out["rows"]], ["invite", "skip"])
         self.assertFalse(self.state.exists(), "plan must not write any state")
+
+
+class DiscoverySeeds(BotCase):
+    def test_queries_combine_role_seeds_with_domain_terms_and_locations(self):
+        queries = discovery_queries(self.cfg)
+        first = queries[0]
+        self.assertIn("recruiter", first["keywords"])
+        self.assertIn("genai", first["keywords"])
+        self.assertIn("India", first["keywords"])
+        roles = [q["role"] for q in queries[:3]]
+        self.assertEqual(roles, ["recruiter", "hiring manager", "engineering manager"],
+                         "the first searches must span roles, not exhaust one seed")
+
+    def test_seeds_are_config_data(self):
+        cfg = dict(self.cfg, discovery={"role_seeds": ["zyxq-plugh"], "locations": ["Nowhere"]})
+        queries = discovery_queries(cfg)
+        self.assertTrue(all("zyxq-plugh" in q["keywords"] for q in queries))
+        self.assertFalse(discovery_queries(self.cfg) == queries)
+
+    def test_no_seeds_means_no_queries(self):
+        cfg = dict(self.cfg, discovery={"role_seeds": [], "locations": ["India"]})
+        self.assertEqual(discovery_queries(cfg), [])
+
+
+class DiscoveryRun(BotCase):
+    def discover(self, queries, **over):
+        kw = dict(
+            live=True, day=DAY, window=ALWAYS, max_searches=3, max_pages=2,
+            max_profile_views=5, max_queued=20, search_min_delay=0,
+            search_max_delay=0, now_iso=NOW,
+        )
+        kw.update(over)
+        driver = kw.pop("driver", None)
+        if driver is None:
+            driver = FakeDriver(searches=kw.pop("searches", []), views=kw.pop("views", []))
+            self.driver = driver
+        return run_discover(queries, self.cfg, self.ledger, self.cache, self.audit,
+                            driver_factory=lambda: driver, **kw)
+
+    def setUp(self):
+        super().setUp()
+        self.cache = {"version": 1, "pages": {}}
+
+    def test_matching_cards_are_queued_with_reasons(self):
+        summary = self.discover(
+            [seed_query()], searches=[[search_card("a"), search_card("b", headline="Sales", location="London")]],
+        )
+        self.assertEqual(summary["queued"], 1)
+        self.assertEqual(summary["skipped"], 1)
+        person = self.ledger["persons"]["in:a"]
+        self.assertEqual(person["status"], "queued")
+        self.assertIn("linkedin.com/in/a", person["profile_url"])
+        rows = self.audit_rows()
+        self.assertEqual(rows[-2]["decision"], "queue")
+        self.assertIn("role:recruiter", rows[-2]["reason"])
+
+    def test_budgets_bind_searches_pages_and_views(self):
+        pages = [[search_card(f"p{i}")] for i in range(4)]
+        driver = FakeDriver(searches=list(pages))
+        summary = self.discover([seed_query(), seed_query("hiring manager genai India")],
+                                driver=driver, max_searches=1, max_pages=2)
+        self.assertEqual(len(driver.search_calls), 2, "one query, two pages, then stop")
+        self.assertEqual(summary["deferred"], 1)
+
+        self.setUp()  # fresh ledger+cache: part 1's fetched pages must not satisfy this part
+        driver = FakeDriver(searches=list(pages))
+        summary = self.discover([seed_query()], driver=driver, max_searches=1, max_pages=1)
+        self.assertEqual(len(driver.search_calls), 1, "page budget binds even with results left")
+
+        self.setUp()
+        thin = [search_card("v1", headline=""), search_card("v2", headline=""), search_card("v3", headline="")]
+        driver = FakeDriver(searches=[thin], views=[{"headline": "Tech Recruiter"}])
+        summary = self.discover([seed_query()], driver=driver, max_profile_views=1)
+        self.assertEqual(len(driver.view_calls), 1, "profile-view budget binds")
+        self.assertEqual(summary["profile_views"], 1)
+
+    def test_empty_page_stops_pagination_without_spending_budget(self):
+        driver = FakeDriver(searches=[[search_card("a")], []])
+        summary = self.discover([seed_query()], driver=driver, max_pages=5)
+        self.assertEqual(len(driver.search_calls), 2)
+        self.assertEqual(summary["queued"], 1)
+
+    def test_search_fetches_are_paced(self):
+        sleeps = []
+        self.discover([seed_query(), seed_query("x")], max_pages=1,
+                      searches=[[search_card("a")], [search_card("b")]], sleeper=sleeps.append)
+        self.assertEqual(len(sleeps), 1, "one pause between the two fetches, none before the first")
+
+    def test_queue_cap_matches_the_invite_cap(self):
+        cards = [[search_card(f"q{i}")] for i in range(3)]
+        driver = FakeDriver(searches=cards)
+        summary = self.discover([seed_query()], driver=driver, max_pages=3, max_queued=2)
+        self.assertEqual(summary["queued"], 2)
+        self.assertEqual(summary["stopped"], "queue_cap_reached")
+        self.assertEqual(queued_today(self.ledger, DAY), 2)
+
+    def test_queued_and_terminal_persons_are_never_requeued(self):
+        for status in sorted(DISCOVERY_STATUSES):
+            with self.subTest(status=status):
+                self.setUp()
+                self.ledger["persons"] = {"in:known": {"status": status, "last_ts": NOW}}
+                summary = self.discover([seed_query()], searches=[[search_card("known")]])
+                self.assertEqual(summary["queued"], 0)
+                self.assertEqual(summary["skipped"], 1)
+                self.assertIn(status, self.audit_rows()[-1]["reason"])
+
+    def test_stop_aborts_with_no_retry(self):
+        signals = [LoginChallenge("wall"), CaptchaChallenge("c"), VerificationPrompt("v"),
+                   RateLimited("l"), UnexpectedUI("u")]
+        for signal in signals:
+            with self.subTest(signal=signal.signal):
+                self.setUp()
+                with self.assertRaises(InviteStop):
+                    self.discover([seed_query(), seed_query("x")],
+                                  searches=[[search_card("a")], signal, [search_card("b")]])
+                self.assertEqual(len(self.driver.search_calls), 2)
+                self.assertTrue(self.driver.closed)
+                self.assertEqual(self.audit_rows()[-1]["decision"], "stop")
+
+    def test_outside_the_window_nothing_starts(self):
+        def exploding():
+            raise AssertionError("discovery outside the window must never start a browser")
+
+        summary = run_discover(
+            [seed_query()], self.cfg, self.ledger, self.cache, self.audit,
+            live=True, day=DAY, window=NEVER, max_searches=3, max_pages=2,
+            max_profile_views=5, max_queued=20, search_min_delay=0,
+            search_max_delay=0, driver_factory=exploding, now_iso=NOW,
+        )
+        self.assertEqual(summary["stopped"], "outside_window")
+        self.assertEqual(summary["searches_executed"], 0)
+
+
+class DiscoveryDryRun(BotCase):
+    def test_dry_run_touches_nothing(self):
+        cache = {"version": 1, "pages": {
+            cache_key("recruiter genai India", "India", 1):
+                {"ts": NOW, "results": [search_card("cached")]},
+        }}
+
+        def exploding():
+            raise AssertionError("dry-run discovery must not build a driver")
+
+        summary = run_discover(
+            [seed_query()], self.cfg, self.ledger, cache, self.audit,
+            live=False, day=DAY, window=ALWAYS, max_searches=3, max_pages=2,
+            max_profile_views=5, max_queued=20, search_min_delay=0,
+            search_max_delay=0, driver_factory=exploding, now_iso=NOW,
+        )
+        kinds = [r["decision"] for r in summary["decisions"]]
+        self.assertIn("would-queue", kinds, "cached matches are scored and reported")
+        self.assertIn("would-search", kinds, "uncached pages are reported, never fetched")
+        self.assertEqual(self.ledger, {"persons": {}, "sends": []})
+        self.assertFalse(self.audit.is_file(), "dry-run discovery writes no audit entries")
+        self.assertNotIn(
+            cache_key("recruiter genai India", "India", 2), cache["pages"],
+            "dry-run discovery writes no cache entries either",
+        )
+
+    def test_cli_dry_run_writes_no_state_files(self):
+        targets = mini_targets(self.tmp)
+        proc = subprocess.run(
+            [sys.executable, str(TOOL), "discover", "--targets", str(targets),
+             "--state-dir", str(self.state), "--window", ALWAYS],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("WOULD SEARCH", proc.stdout)
+        self.assertFalse(self.state.exists(), "dry-run discovery must not create any state")
+
+
+class DiscoveryCache(BotCase):
+    def test_rerun_never_rescrapes(self):
+        queries = [seed_query()]
+        cache: dict = {"version": 1, "pages": {}}
+        first_driver = FakeDriver(searches=[[search_card("a")]])
+        first = run_discover(
+            queries, self.cfg, self.ledger, cache, self.audit,
+            live=True, day=DAY, window=ALWAYS, max_searches=1, max_pages=1,
+            max_profile_views=0, max_queued=20, search_min_delay=0,
+            search_max_delay=0, driver_factory=lambda: first_driver, now_iso=NOW,
+        )
+        self.assertEqual(first["searches_executed"], 1)
+        cache_path = self.state / "cache.json"
+        save_cache(cache_path, cache)
+        reloaded = load_cache(cache_path)
+        ledger2 = {"persons": {}, "sends": []}
+        tripwire = FakeDriver(searches=[AssertionError("a cached page must never be re-scraped")])
+        second = run_discover(
+            queries, self.cfg, ledger2, reloaded, self.audit,
+            live=True, day=DAY, window=ALWAYS, max_searches=1, max_pages=1,
+            max_profile_views=0, max_queued=20, search_min_delay=0,
+            search_max_delay=0, driver_factory=lambda: tripwire, now_iso=NOW,
+        )
+        self.assertEqual(tripwire.search_calls, [])
+        self.assertEqual(second["searches_executed"], 0)
+        self.assertEqual(second["cache_hits"], 1)
+        self.assertEqual(second["queued"], 1, "cached cards still score and queue")
+
+
+class DiscoveryCli(BotCase):
+    def test_live_discovers_and_queues_from_config_seeds(self):
+        from tools import linkedin_connect as mod
+
+        targets = mini_targets(self.tmp, discovery={"max_pages": 1})
+        driver = FakeDriver(searches=[[search_card("a")], [search_card("b")]])
+        real_driver = mod.PlaywrightDriver
+        mod.PlaywrightDriver = lambda profile_dir: driver
+        try:
+            args = build_parser().parse_args([
+                "discover", "--targets", str(targets), "--state-dir", str(self.state),
+                "--window", ALWAYS, "--live",
+            ])
+            rc = cmd_discover(args)
+        finally:
+            mod.PlaywrightDriver = real_driver
+        self.assertEqual(rc, 0)
+        saved = load_ledger(self.state / "ledger.json")
+        self.assertEqual(saved["persons"]["in:a"]["status"], "queued")
+        self.assertEqual(len(driver.search_calls), 2, "both seed queries run within budget")
+
+    def test_cli_stop_saves_state_and_exits_2(self):
+        import io
+        from contextlib import redirect_stderr
+
+        from tools import linkedin_connect as mod
+
+        targets = mini_targets(self.tmp)
+        real_driver = mod.PlaywrightDriver
+        mod.PlaywrightDriver = lambda profile_dir: FakeDriver(searches=[RateLimited("slow down")])
+        try:
+            args = build_parser().parse_args([
+                "discover", "--targets", str(targets), "--state-dir", str(self.state),
+                "--window", ALWAYS, "--live",
+            ])
+            err = io.StringIO()
+            with redirect_stderr(err):
+                rc = cmd_discover(args)
+        finally:
+            mod.PlaywrightDriver = real_driver
+        self.assertEqual(rc, 2)
+        self.assertIn("BOT STOPPED", err.getvalue())
+        saved_cache = load_cache(self.state / "discovery_cache.json")
+        self.assertIn("pages", saved_cache, "a stopped run still persists its cache")
+
+    def test_max_queued_above_twenty_is_refused(self):
+        targets = mini_targets(self.tmp)
+        proc = subprocess.run(
+            [sys.executable, str(TOOL), "discover", "--targets", str(targets),
+             "--state-dir", str(self.state), "--window", ALWAYS, "--max-queued", "21"],
+            capture_output=True, text=True,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+
+
+class LedgerHandoff(BotCase):
+    def test_run_from_ledger_invites_discover_queued_profiles(self):
+        import io
+        from contextlib import redirect_stdout
+
+        ledger = {
+            "persons": {
+                "in:a": {"status": "queued", "last_ts": NOW,
+                         "profile_url": "https://www.linkedin.com/in/a/",
+                         "name": "a", "headline": "Tech Recruiter, GenAI", "location": "Remote"},
+                "in:old": {"status": "invited", "last_ts": NOW,
+                           "name": "old",
+                           "profile_url": "https://www.linkedin.com/in/old/"},
+            },
+            "sends": [],
+        }
+        save_ledger(self.state / "ledger.json", ledger)
+        args = build_parser().parse_args([
+            "run", "--from-ledger", "--state-dir", str(self.state), "--window", ALWAYS,
+        ])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = cmd_run(args)
+        self.assertEqual(rc, 0)
+        self.assertIn("WOULD SEND", out.getvalue())
+        self.assertIn("in:a", out.getvalue(), "the queued profile is offered")
+        self.assertNotIn("in:old", out.getvalue(), "the already-invited profile is not re-offered")
 
 
 if __name__ == "__main__":
