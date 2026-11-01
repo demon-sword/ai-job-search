@@ -1,0 +1,54 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Cover Letter - AiSensy, Artificial Intelligence Engineer
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass[]{cover}
+\usepackage{fancyhdr}
+
+\pagestyle{fancy}
+\fancyhf{}
+
+\rfoot{Page \thepage \hspace{0pt}}
+\thispagestyle{empty}
+\renewcommand{\headrulewidth}{0pt}
+\begin{document}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%     TITLE NAME
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\namesection{}{\Huge{Sarthak Agarwal}}{  \href{mailto:sarthak01041998@gmail.com}{sarthak01041998@gmail.com} | +91-8506989793 |  \urlstyle{same}\href{https://linkedin.com/in/sarthak-agarwal-954330175}{LinkedIn}
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%     MAIN COVER LETTER CONTENT
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\currentdate{\today}
+\lettercontent{Dear AiSensy Hiring Team,}
+
+\lettercontent{I am writing to apply for the Artificial Intelligence Engineer role at AiSensy. As an AI Engineer at Dream11 Pulse building PulseAI -- a production multi-tenant GenAI observability platform with a 5-persona multi-agent layer, dual-RAG, and 65-case evaluation gate -- I have direct hands-on experience with every core requirement in your posting: production LLM systems, RAG pipelines, AI agents, evaluation frameworks, guardrails, FastAPI, vector databases, and Docker/Kubernetes on AWS.}
+
+\lettercontent{Here is how my experience maps to what you're looking for:}
+
+{\raggedright\fontspec[Path = OpenFonts/fonts/raleway/]{Raleway-Medium}\fontsize{11pt}{13pt}\selectfont
+\begin{itemize}
+    \item \textbf{Production GenAI \& LLM Systems:} Architected PulseAI serving 9 domains via 47 MCP tools; LLM orchestration with Gemini Flash, Claude Opus/Haiku via Google ADK; Features-as-Tools contract for dynamic tool routing
+    \item \textbf{RAG \& Vector Search:} Designed dual-RAG for cross-database natural-language queries (ClickHouse, Athena, S3, MySQL to Qdrant); built XenoRAG pipeline (Confluence to Qdrant) for RCA agent; optimized chunking, embedding, retrieval, and reranking
+    \item \textbf{AI Agents \& Automation:} Built 5-persona agent system (Planner, Executor, Summary, Report, RCA) with autonomous workflow execution, context management, and tool usage; integrated with internal APIs and third-party services via MCP
+    \item \textbf{AI Evaluation \& Guardrails:} Established 65+ case golden-dataset evaluation suite (Promptfoo/Google ADK) as deployment gate at 80\% pass threshold; 3-layer production guardrails: PII redaction, anti-hallucination, leak defense
+    \item \textbf{Backend \& Infrastructure:} FastAPI microservices on AWS EC2 with Docker, Terraform, Jenkins CI/CD; MongoDB, ClickHouse, MySQL, Redis for caching; spec-to-ship workflow with Opus/Haiku advisor pattern (Claude Code) adopted by 50-person team
+\end{itemize}\par}
+\vspace{6pt}
+
+\lettercontent{I have followed AiSensy's growth as a WhatsApp engagement platform powering 250,000+ businesses and 800+ crore messages annually. Your focus on building the next generation of AI-powered conversational products -- from RAG and agentic AI to intelligent automation for customer engagement -- aligns exactly with the problems I solve daily. The opportunity to own AI systems end-to-end, from architecture through deployment and continuous optimization, in a high-growth SaaS environment is what I'm seeking.}
+
+\lettercontent{My working style matches what you describe: high autonomy with strong ownership, research-first approach to ambiguous problems (dual-RAG, XenoRAG, spec-to-ship workflow), and a focus on measurable outcomes -- accuracy, latency, cost, and business impact. I thrive in fast-paced, engineering-driven startups where technical depth is valued and I can mentor peers while raising the technical bar.}
+
+\lettercontent{I look forward to hearing from you.}
+
+\begin{flushright}
+\closing{Kind regards,}
+
+\signature{Sarthak Agarwal}
+\end{flushright}
+\end{document}
