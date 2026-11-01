@@ -1,0 +1,54 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Cover Letter - Sutra.AI, AI Engineer
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass[]{cover}
+\usepackage{fancyhdr}
+
+\pagestyle{fancy}
+\fancyhf{}
+
+\rfoot{Page \thepage \hspace{0pt}}
+\thispagestyle{empty}
+\renewcommand{\headrulewidth}{0pt}
+\begin{document}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%     TITLE NAME
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\namesection{}{\Huge{Sarthak Agarwal}}{  \href{mailto:sarthak01041998@gmail.com}{sarthak01041998@gmail.com} | +91-8506989793 |  \urlstyle{same}\href{https://linkedin.com/in/sarthak-agarwal-954330175}{LinkedIn}
+}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%     MAIN COVER LETTER CONTENT
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\currentdate{\today}
+\lettercontent{Dear Sutra.AI Hiring Team,}
+
+\lettercontent{I am applying for the AI Engineer role at Sutra.AI. Your mission to deliver ``AI for Business Builders,'' an end-to-end platform helping mid-market enterprises achieve business goals through AI transformation, aligns directly with my work at Dream11 Pulse, where I architected PulseAI, a multi-tenant GenAI observability platform with a 5-persona multi-agent layer, dual-RAG for cross-database natural-language queries, and automated evaluation gates with production guardrails.}
+
+\lettercontent{My experience directly addresses your must-have qualifications and key responsibilities:}
+
+{\raggedright\fontspec[Path = OpenFonts/fonts/raleway/]{Raleway-Medium}\fontsize{11pt}{13pt}\selectfont
+\begin{itemize}
+    \item \textbf{RAG \& Agentic Frameworks:} Designed dual-RAG and XenoRAG (Confluence to Qdrant) for cross-DB natural-language queries across ClickHouse, Athena, S3, MySQL; built 5-persona multi-agent system (Planner, Executor, Summary, Report, RCA) with Features-as-Tools contract and 47 MCP tools, directly relevant to your LangGraph, Autogen, CrewAI, and RAG pipeline requirements; architected open-architecture RAG avoiding vendor lock-in, aligning with Sutra.AI's AI Open Architecture
+    \item \textbf{LLM Engineering \& Evaluation:} Built 65-case golden-dataset evaluation suite with Promptfoo and Google ADK gating deployments at 80\% pass threshold; implemented 3-layer production guardrails (PII redaction, anti-hallucination, leak defense); LLM orchestration with Gemini Flash, Claude Opus/Haiku via ADK, mapping to your evaluation pipelines, fine-tuning, and prompt optimization needs; AI FinOps mindset: cost-aware model selection and evaluation gating for production efficiency
+    \item \textbf{AI Agent Development:} Developed autonomous RCA agent with Google ADK + MCP for multi-step incident investigation across logs, metrics, traces; integrated agents with APIs, databases, internal platforms, demonstrating the reasoning, planning, and tool-use capabilities you seek
+    \item \textbf{Production Deployment:} Deployed FastAPI backend on AWS EC2 with Docker, Terraform, Jenkins CI/CD; built spec-to-ship workflow with Opus/Haiku advisor pattern (Claude Code) adopted by 50-person team, showing end-to-end delivery from prototype to production-grade systems; AI Ops/MLOps integration: monitoring, cost control, deployment automation
+    \item \textbf{Technical Foundation:} Python expert (FastAPI, NumPy, Pandas, Scikit-Learn, LangChain basics), ClickHouse, Qdrant, SQL, Docker, Terraform; M.Tech CS from IIT Guwahati (GATE AIR 312), meeting your degree and core competency requirements
+\end{itemize}\par}
+\vspace{6pt}
+
+\lettercontent{Sutra.AI's ``AI for Business Builders'' mission resonates with my work building PulseAI's observability platform, where the RCA agent surfaced a \$200K revenue-impacting issue at FanCode by autonomously investigating incidents across distributed systems. I am especially drawn to your emphasis on moving innovation beyond experimentation to production-grade capabilities for mid-market enterprises, a challenge I have tackled directly through evaluation gates, guardrails, and reproducible deployment practices. Your AI Open Architecture and AI Ops/AI FinOps approach aligns with my experience building vendor-agnostic, cost-aware AI systems.}
+
+\lettercontent{I thrive in high-autonomy, engineering-driven environments where research-first problem solving meets production rigor. My collaboration style is async-first with sync alignment, well-suited to cross-functional AI, Data, and Engineering teams. I bring deep curiosity for emerging AI technologies, structured communication for non-technical audiences, and strong ownership of delivery timelines.}
+
+\lettercontent{I would welcome the opportunity to discuss how my multi-agent architecture, RAG, and evaluation experience can contribute to Sutra.AI's next-generation AI capabilities.}
+
+\begin{flushright}
+\closing{Kind regards,}
+
+\signature{Sarthak Agarwal}
+\end{flushright}
+\end{document}
