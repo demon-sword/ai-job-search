@@ -15,6 +15,17 @@ per-file diff commands.
 
 ### Added
 
+- **LinkedIn connect bot** (`tools/linkedin_connect.py`,
+  `tools/linkedin_connect_targets.json`, `tests/test_linkedin_connect.py`) -
+  sends connection invites to hiring people (recruiters, hiring managers, eng
+  leaders) from a hand-collected profile queue, scored against configurable
+  targeting data. Dry-run by default with an explicit `--live` flag, hard
+  daily cap of 20 from a durable ledger, instant stop (exit 2, no retry) on
+  login/captcha/verification/rate-limit/unexpected-UI states, jittered pacing
+  inside a daily window, append-only audit log, dedupe across restarts, and no
+  credentials in the repo (local browser profile only). Personal use only:
+  automated invites violate LinkedIn's ToS.
+
 - **`/expand` project and portfolio expansion** (`.claude/commands/expand.md`,
   `tests/test_expand_command.py`) - expands candidate discovery
   to technical projects from public GitHub repositories, extracting structured summaries
