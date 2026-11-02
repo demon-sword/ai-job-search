@@ -65,7 +65,7 @@ import random
 import re
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -76,6 +76,7 @@ LEDGER_NAME = "ledger.json"
 AUDIT_NAME = "audit.jsonl"
 
 HARD_DAILY_CAP = 20
+HARD_WEEKLY_CAP = 90
 DEFAULT_MIN_DELAY = 60.0
 DEFAULT_MAX_DELAY = 180.0
 DEFAULT_WINDOW = "09:00-21:00"
@@ -219,6 +220,53 @@ def scan_entry_controls(names) -> dict:
 FOLLOW_ONLY = "follow_only"
 NOTE_REQUIRED = "note_required"
 UNKNOWN_CONTROLS = "unknown_controls"
+# Step-verified misses: the menu never yielded a verified entry, or a
+# clicked Connect never yielded a verified dialog, after the one bounded
+# re-attempt each. run_queue treats both exactly like unknown_controls
+# (no ledger write, storm streak, skip with the step reason) - they are
+# distinct outcomes so the audit says which transition failed.
+MENU_MISSED = "menu_missed"
+DIALOG_MISSED = "dialog_missed"
+STEP_MISSES = (UNKNOWN_CONTROLS, MENU_MISSED, DIALOG_MISSED)
+# Invitable-confidence tiers for queue ordering: profiles with an observed
+# direct Connect go first, More-overflow profiles second, and profiles whose
+# entry variant is unknown last. The signal is recorded from cached data
+# (discovery views, prior run outcomes) - never from extra page visits.
+ENTRY_DIRECT = "direct"
+ENTRY_MORE = "more"
+ENTRY_UNKNOWN = "unknown"
+ENTRY_TIERS = {ENTRY_DIRECT: 0, ENTRY_MORE: 1, ENTRY_UNKNOWN: 2}
+
+
+def entry_variant(record: dict | None) -> str:
+    """Tier name for one cached person/candidate record. An explicitly
+    recorded entry wins; otherwise a prior follow_only/note_required status
+    is cached evidence of creator-mode (More-or-nothing). Everything else is
+    unknown - including never-visited queue entries."""
+    record = record or {}
+    seen = record.get("entry")
+    if seen in ENTRY_TIERS:
+        return seen
+    if record.get("status") in (FOLLOW_ONLY, NOTE_REQUIRED):
+        return ENTRY_MORE
+    return ENTRY_UNKNOWN
+
+
+def tier_name(candidate: dict, known: dict | None) -> str:
+    """Tier name for one run candidate: its own recorded entry first,
+    falling back to the ledger person discovery cached for it."""
+    name = entry_variant(candidate)
+    return name if name != ENTRY_UNKNOWN else entry_variant(known)
+
+
+def queue_tier(candidate: dict, ledger: dict) -> int:
+    """Sort rank for one run candidate (see tier_name)."""
+    try:
+        key = canonical_key(str(candidate.get("profile_url") or ""))
+    except ValueError:
+        return ENTRY_TIERS[ENTRY_UNKNOWN]
+    known = (ledger.get("persons", {}) or {}).get(key)
+    return ENTRY_TIERS[tier_name(candidate, known)]
 # run skips these without sending; discovery never re-queues them.
 # unknown_controls is deliberately NOT sticky: an unreadable profile is
 # retried next run, while the per-run storm guard watches for UI drift.
@@ -491,6 +539,26 @@ def sends_today(ledger: dict, day: str) -> int:
     return sum(1 for ts in ledger.get("sends", []) if str(ts)[:10] == day)
 
 
+def sends_last_days(ledger: dict, day: str, days: int) -> int:
+    """Sends in the rolling window ending on day (inclusive, ISO dates
+    compare lexicographically). A 7-day window covers day-6..day."""
+    if days < 1:
+        raise ValueError("window must be at least 1 day")
+    return sum(1 for ts in ledger.get("sends", []) if day[:10] >= str(ts)[:10] >= _shift_day(day, days - 1))
+
+
+def _shift_day(day: str, back: int) -> str:
+    """ISO day string shifted back by N days (day is YYYY-MM-DD)."""
+    from datetime import date
+
+    year, month, dom = (int(part) for part in str(day)[:10].split("-"))
+    return (date(year, month, dom) - timedelta(days=back)).isoformat()
+
+
+def sends_last_7d(ledger: dict, day: str) -> int:
+    return sends_last_days(ledger, day, 7)
+
+
 def append_audit(path: Path, record: dict) -> None:
     """Append-only: the audit log is never rewritten, only extended."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -551,9 +619,10 @@ class PlaywrightDriver(InviteDriver):
     """Live LinkedIn driver. Created only for --live runs; the import stays
     lazy so dry runs, planning, and tests never need Playwright installed."""
 
-    def __init__(self, profile_dir: Path, places=()):
+    def __init__(self, profile_dir: Path, places=(), capture_dir=None):
         self.profile_dir = profile_dir
         self._places = [str(p).lower() for p in places or [] if str(p).strip()]
+        self._capture_dir = Path(capture_dir) if capture_dir is not None else None
         self._pw = None
         self._ctx = None
 
@@ -618,19 +687,15 @@ class PlaywrightDriver(InviteDriver):
             except Exception as exc:
                 raise UnexpectedUI(f"profile content never rendered: {exc}") from exc
             scan = scan_entry_controls(acc_names)
-            for index in scan["connect"]:
-                try:
-                    page.get_by_role("button").nth(index).click(timeout=10000)
-                    page.wait_for_timeout(1500)
-                except InviteStop:
-                    raise
-                except Exception:
-                    continue
-                stop = self._page_state(page)
-                if stop is not None:
-                    raise stop
-                if self._dialog_targets(page, candidate):
-                    return self._send_bare_from_dialog(page, note)
+            slug = self._slug(candidate)
+            for pos, index in enumerate(scan["connect"]):
+                outcome = self._press_connect_and_send(
+                    page,
+                    lambda i=index: page.get_by_role("button").nth(i).click(timeout=10000),
+                    candidate, note, slug, f"direct{pos}",
+                )
+                if outcome is not None:
+                    return outcome
                 self._escape(page)
             # No verified Connect: a follow-only profile may still invite
             # via More -> Connect; anything else is an unknown-controls skip.
@@ -663,6 +728,64 @@ class PlaywrightDriver(InviteDriver):
         except Exception:
             pass
 
+    @staticmethod
+    def _slug(candidate: dict) -> str:
+        """Filesystem-safe profile slug for capture filenames."""
+        try:
+            key = canonical_key(str(candidate.get("profile_url") or ""))
+        except ValueError:
+            return "unkeyable"
+        return re.sub(r"[^a-z0-9]+", "-", key.strip("/").lower()).strip("-") or "unkeyable"
+
+    def _capture(self, page, slug: str, step: str, ok: bool) -> None:
+        """Save a screenshot + DOM snippet for one verified step, win or
+        lose. Best effort only: a capture failure must never fail the run,
+        and with no capture_dir configured nothing is written (tests)."""
+        if self._capture_dir is None:
+            return
+        try:
+            stamp = re.sub(r"[^0-9]", "", utcnow_iso()) or "00000000"
+            base = self._capture_dir / f"{stamp}_{slug}_{step}_{'ok' if ok else 'miss'}"
+            base.parent.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(base.with_suffix(".png")))
+            try:
+                dom = page.evaluate("() => document.body ? document.body.innerText.slice(0, 2000) : ''")
+            except Exception:
+                dom = ""
+            base.with_suffix(".txt").write_text(scrub(str(dom or "")), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _press_connect_and_send(self, page, press, candidate: dict, note: str | None,
+                                slug: str, tag: str):
+        """One self-verifying Connect transition: press the control, assert
+        the opened dialog addresses the candidate, send bare. Each step gets
+        ONE bounded re-attempt (re-press once); every attempt is captured win
+        or lose. Returns the send outcome, or None when the dialog never
+        verified - the caller escapes and moves to the next control. The
+        challenge family still raises; mechanical press failures just miss."""
+        for attempt in (0, 1):
+            try:
+                press()
+                page.wait_for_timeout(1500)
+            except InviteStop:
+                raise
+            except Exception:
+                self._capture(page, slug, f"{tag}_press{attempt}", ok=False)
+                continue
+            stop = self._page_state(page)
+            if stop is not None:
+                raise stop
+            if self._dialog_targets(page, candidate):
+                self._capture(page, slug, f"{tag}_dialog{attempt}", ok=True)
+                outcome = self._send_bare_from_dialog(page, note)
+                if outcome == "sent":
+                    self._capture(page, slug, f"{tag}_sent", ok=True)
+                return outcome
+            self._capture(page, slug, f"{tag}_dialog{attempt}", ok=False)
+            self._escape(page)
+        return None
+
     def _dialog_targets(self, page, candidate: dict) -> bool:
         """True when an open dialog addresses the candidate by name."""
         try:
@@ -674,49 +797,82 @@ class PlaywrightDriver(InviteDriver):
             return False
         return verify_dialog_target(text, candidate.get("name") or "")
 
+    def _expand_more(self, page, index: int) -> bool:
+        """Open one More menu. True when the click landed (the menu still
+        needs its own read-assert); False on any mechanical failure. The
+        challenge family raises."""
+        try:
+            page.get_by_role("button").nth(index).click(timeout=10000)
+            page.wait_for_timeout(1500)
+        except InviteStop:
+            raise
+        except Exception:
+            return False
+        stop = self._page_state(page)
+        if stop is not None:
+            raise stop
+        return True
+
+    def _read_menu(self, page) -> list:
+        """Menu item names, or [] when the read itself fails. Callers assert
+        non-empty + entry match before any click - an empty read is a miss,
+        never a licence to click blind."""
+        try:
+            return page.evaluate(MORE_MENU_READ_JS) or []
+        except Exception:
+            return []
+
     def _more_connect_flow(self, page, more_indices: list, candidate: dict, note: str | None):
-        """Follow-entry invite path over up to three More buttons: open each,
-        choose only a name-verified Connect item, verify the dialog target,
-        send bare. Returns an outcome, or None when no More path was usable
-        (caller maps that to FOLLOW_ONLY or UNKNOWN_CONTROLS). Mechanical
-        failures move to the next More; the challenge family still raises."""
-        for index in more_indices:
-            try:
-                page.get_by_role("button").nth(index).click(timeout=10000)
-                page.wait_for_timeout(1500)
-            except InviteStop:
-                raise
-            except Exception:
+        """Follow-entry invite path over up to three More buttons. Every
+        transition is asserted: after expanding, the menu read must be
+        non-empty and contain the verified entry before clicking (ONE bounded
+        re-expand + re-read per More); after clicking Connect, the dialog
+        must verify before sending (ONE bounded re-press, shared helper).
+        Every attempt is captured win or lose. Returns an outcome,
+        MENU_MISSED when menus never verified, DIALOG_MISSED when an entry
+        was clicked but no dialog ever verified, or None when no More was
+        even openable (caller maps that to FOLLOW_ONLY or UNKNOWN_CONTROLS).
+        Mechanical failures move to the next More; the challenge family
+        still raises."""
+        slug = self._slug(candidate)
+        name = candidate.get("name") or ""
+        tried_any = False
+        clicked_any = False
+        for pos, index in enumerate(more_indices[:3]):
+            if not self._expand_more(page, index):
                 continue
-            stop = self._page_state(page)
-            if stop is not None:
-                raise stop
-            try:
-                menu_names = page.evaluate(MORE_MENU_READ_JS) or []
-            except Exception:
-                self._escape(page)
-                continue
-            entry_name = pick_invite_entry(menu_names, candidate.get("name") or "", bare_ok=True)
+            tried_any = True
+            menu_names = self._read_menu(page)
+            entry_name = pick_invite_entry(menu_names, name, bare_ok=True)
             if entry_name is None:
+                # Assert failed (empty read or no usable entry): ONE bounded
+                # re-expand + re-read of the same More before giving up on it.
+                self._capture(page, slug, f"more{pos}_menu0", ok=False)
+                self._escape(page)
+                if self._expand_more(page, index):
+                    menu_names = self._read_menu(page)
+                    entry_name = pick_invite_entry(menu_names, name, bare_ok=True)
+            if entry_name is None:
+                self._capture(page, slug, f"more{pos}_menu1", ok=False)
                 self._escape(page)
                 continue
-            try:
-                page.locator(
+            self._capture(page, slug, f"more{pos}_menu", ok=True)
+            clicked_any = True
+            outcome = self._press_connect_and_send(
+                page,
+                lambda e=entry_name: page.locator(
                     'button, a, [role="button"], [role="menuitem"], '
                     '[role="menuitemcheckbox"], li'
-                ).get_by_text(entry_name, exact=True).first.click(timeout=10000)
-                page.wait_for_timeout(1500)
-            except InviteStop:
-                raise
-            except Exception:
-                self._escape(page)
-                continue
-            stop = self._page_state(page)
-            if stop is not None:
-                raise stop
-            if self._dialog_targets(page, candidate):
-                return self._send_bare_from_dialog(page, note)
+                ).get_by_text(e, exact=True).first.click(timeout=10000),
+                candidate, note, slug, f"more{pos}",
+            )
+            if outcome is not None:
+                return outcome
             self._escape(page)
+        if clicked_any:
+            return DIALOG_MISSED
+        if tried_any:
+            return MENU_MISSED
         return None
 
     def _send_bare_from_dialog(self, page, note: str | None) -> str:
@@ -852,7 +1008,26 @@ class PlaywrightDriver(InviteDriver):
                 raise UnexpectedUI(f"could not read profile header: {exc}") from exc
             if not isinstance(data, dict) or not (data.get("headline") or data.get("location")):
                 raise UnexpectedUI("profile header has neither headline nor location")
-            return {"headline": data.get("headline") or "", "location": data.get("location") or ""}
+            # Record the invite entry variant seen on this already-paid-for
+            # view (direct Connect vs More-overflow vs unknown) so later
+            # passes can order the queue from cache. Enrichment must never
+            # fail the view itself: any read error keeps "unknown".
+            try:
+                names = driver_page.evaluate(BUTTON_NAMES_JS) or []
+                scan = scan_entry_controls(names)
+                if scan["connect"]:
+                    entry = ENTRY_DIRECT
+                elif scan["follow"] or scan["more"]:
+                    entry = ENTRY_MORE
+                else:
+                    entry = ENTRY_UNKNOWN
+            except Exception:
+                entry = ENTRY_UNKNOWN
+            return {
+                "headline": data.get("headline") or "",
+                "location": data.get("location") or "",
+                "entry": entry,
+            }
         finally:
             try:
                 driver_page.close()
@@ -1009,6 +1184,25 @@ def run_queue(
         return summary
 
     min_score = float(cfg.get("min_score", 0))
+    # Refuse to start a pass that would breach either cap: the driver is
+    # never created, nothing is visited, and the refusal is audited.
+    if sends_today(ledger, day) >= cap:
+        summary["stopped"] = "cap_reached"
+        append_audit(
+            audit_path,
+            {"ts": timestamp, "decision": "refuse",
+             "reason": f"daily cap already reached ({cap}) - pass refused", "live": live},
+        )
+        return summary
+    if sends_last_7d(ledger, day) >= HARD_WEEKLY_CAP:
+        summary["stopped"] = "weekly_cap_reached"
+        append_audit(
+            audit_path,
+            {"ts": timestamp, "decision": "refuse",
+             "reason": f"weekly cap already reached ({HARD_WEEKLY_CAP}) - pass refused",
+             "live": live},
+        )
+        return summary
     driver = None
     if live:
         if driver_factory is None:
@@ -1016,10 +1210,15 @@ def run_queue(
         driver = driver_factory()
         driver.start()
 
+    # Invitable-confidence order: direct-Connect profiles first, then
+    # More-overflow, then unknown variants. The sort is stable, so within a
+    # tier the submitted order is kept and no existing queue shuffles.
+    order = sorted(range(len(candidates)), key=lambda i: queue_tier(candidates[i], ledger))
     sent_this_run = 0
     unknown_streak = 0
     try:
-        for candidate in candidates:
+        for idx in order:
+            candidate = candidates[idx]
             if limit > 0 and (summary["sent"] + summary["would_send"] + summary["skipped"]) >= limit:
                 break
             try:
@@ -1066,13 +1265,23 @@ def run_queue(
                 append_audit(audit_path, record)
                 summary["decisions"].append(record)
                 break
+            if sends_last_7d(ledger, day) >= HARD_WEEKLY_CAP:
+                summary["stopped"] = "weekly_cap_reached"
+                record = {
+                    "ts": timestamp, "profile": key, "name": candidate.get("name"),
+                    "decision": "defer",
+                    "reason": f"weekly cap reached ({HARD_WEEKLY_CAP})", "live": live,
+                }
+                append_audit(audit_path, record)
+                summary["decisions"].append(record)
+                break
             if not live:
                 unknown_streak = 0
                 summary["would_send"] += 1
                 record = {
                     "ts": timestamp, "profile": key, "name": candidate.get("name"),
                     "decision": "dry-run", "reason": "; ".join(reasons),
-                    "score": score, "live": False,
+                    "score": score, "tier": tier_name(candidate, known), "live": False,
                 }
                 append_audit(audit_path, record)
                 summary["decisions"].append(record)
@@ -1106,16 +1315,21 @@ def run_queue(
                 "location": candidate.get("location") or prev.get("location"),
                 "company": candidate.get("company") or prev.get("company"),
             }
-            if outcome == UNKNOWN_CONTROLS:
+            if outcome in STEP_MISSES:
                 # No ledger write: the profile stays queued for a later run,
                 # while the per-run storm guard watches for UI drift.
                 unknown_streak += 1
                 summary["skipped"] += 1
                 summary["unknown_skips"] += 1
+                step_reason = {
+                    UNKNOWN_CONTROLS: "unknown controls",
+                    MENU_MISSED: "menu never verified (re-expanded once)",
+                    DIALOG_MISSED: "invite dialog never verified (re-pressed once)",
+                }[outcome]
                 record = {
                     "ts": timestamp, "profile": key, "name": candidate.get("name"),
                     "decision": "skip", "result": outcome,
-                    "reason": f"unknown controls, {unknown_streak} consecutive",
+                    "reason": f"{step_reason}, {unknown_streak} consecutive",
                     "score": score, "live": True,
                 }
                 append_audit(audit_path, record)
@@ -1161,7 +1375,7 @@ def run_queue(
                 record = {
                     "ts": timestamp, "profile": key, "name": candidate.get("name"),
                     "decision": "send", "result": outcome, "reason": "; ".join(reasons),
-                    "score": score, "live": True,
+                    "score": score, "tier": tier_name(candidate, known), "live": True,
                 }
             append_audit(audit_path, record)
             summary["decisions"].append(record)
@@ -1348,6 +1562,8 @@ def handle_card(
         summary["profile_views"] += 1
         candidate["headline"] = enriched.get("headline") or candidate["headline"]
         candidate["location"] = enriched.get("location") or candidate["location"]
+        if enriched.get("entry") in ENTRY_TIERS:
+            candidate["entry"] = enriched["entry"]
     score, reasons = score_candidate(candidate, cfg)
     if score < min_score:
         summary["skipped"] += 1
@@ -1371,7 +1587,7 @@ def handle_card(
             "ts": timestamp, "profile": key, "name": candidate["name"],
             "decision": "defer", "reason": f"daily queue cap reached ({max_queued})", "live": True,
         }
-    ledger.setdefault("persons", {})[key] = {
+    person = {
         "status": "queued",
         "last_ts": timestamp,
         "score": score,
@@ -1381,6 +1597,9 @@ def handle_card(
         "headline": candidate["headline"],
         "location": candidate["location"],
     }
+    if candidate.get("entry") in ENTRY_TIERS:
+        person["entry"] = candidate["entry"]
+    ledger.setdefault("persons", {})[key] = person
     ledger.setdefault("queued_log", []).append(timestamp)
     summary["queued"] += 1
     record = {
@@ -1436,7 +1655,8 @@ def cmd_discover(args) -> int:
     day = today_str()
 
     def factory():
-        return PlaywrightDriver(args.profile_dir, places=cfg.get("location_allow", []))
+        return PlaywrightDriver(args.profile_dir, places=cfg.get("location_allow", []),
+                                capture_dir=args.state_dir / "diag_run")
 
     try:
         summary = run_discover(
@@ -1534,6 +1754,7 @@ def cmd_run(args) -> int:
                     "name": person.get("name") or "",
                     "headline": person.get("headline") or "",
                     "location": person.get("location") or "",
+                    "entry": person.get("entry") or ENTRY_UNKNOWN,
                 })
         if args.candidates is not None:
             candidates.extend(load_candidates(args.candidates))
@@ -1546,7 +1767,7 @@ def cmd_run(args) -> int:
     day = today_str()
 
     def factory():
-        return PlaywrightDriver(args.profile_dir)
+        return PlaywrightDriver(args.profile_dir, capture_dir=args.state_dir / "diag_run")
 
     try:
         summary = run_queue(
@@ -1573,6 +1794,8 @@ def cmd_run(args) -> int:
         print(f"live: {summary['sent']} sent, {summary['skipped']} skipped.")
     if summary["stopped"] == "cap_reached":
         print(f"daily cap reached ({cap}) - remaining queue deferred to tomorrow.")
+    if summary["stopped"] == "weekly_cap_reached":
+        print(f"weekly cap reached ({HARD_WEEKLY_CAP}/7d) - no further passes until old sends age out.")
     if summary["stopped"] == "unknown_controls":
         print(f"BOT STOPPED - {MAX_CONSECUTIVE_UNKNOWN + 1} consecutive profiles with unreadable "
               f"controls; LinkedIn UI may have drifted. Ledger saved, audit holds every skip.",
@@ -1600,6 +1823,9 @@ def cmd_status(args) -> int:
         "sent_today": sends_today(ledger, day),
         "cap": cap,
         "remaining_today": max(0, cap - sends_today(ledger, day)),
+        "sent_last_7d": sends_last_7d(ledger, day),
+        "weekly_cap": HARD_WEEKLY_CAP,
+        "remaining_week": max(0, HARD_WEEKLY_CAP - sends_last_7d(ledger, day)),
         "persons_by_status": by_status,
         "ledger": str(args.state_dir / LEDGER_NAME),
         "audit": str(args.state_dir / AUDIT_NAME),

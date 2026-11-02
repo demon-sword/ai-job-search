@@ -16,8 +16,15 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tools.linkedin_connect import (
+    DIALOG_MISSED,
     DISCOVERY_STATUSES,
+    ENTRY_DIRECT,
+    ENTRY_MORE,
+    ENTRY_TIERS,
+    ENTRY_UNKNOWN,
     FOLLOW_ONLY,
+    MENU_MISSED,
+    HARD_WEEKLY_CAP,
     MAX_CONSECUTIVE_UNKNOWN,
     NOTE_REQUIRED,
     RUN_SKIP_STATUSES,
@@ -47,11 +54,13 @@ from tools.linkedin_connect import (
     discovery_defaults,
     discovery_queries,
     effective_cap,
+    entry_variant,
     inside_window,
     load_cache,
     load_ledger,
     pace_delay,
     parse_search_card,
+    queue_tier,
     queued_today,
     run_discover,
     run_queue,
@@ -59,6 +68,8 @@ from tools.linkedin_connect import (
     save_ledger,
     score_candidate,
     scrub,
+    sends_last_7d,
+    sends_last_days,
     sends_today,
 )
 
@@ -302,6 +313,86 @@ class DailyCap(BotCase):
                          ["in:three"])
 
 
+class WeeklyCap(BotCase):
+    def test_rolling_window_counts_day_minus_six_not_day_minus_seven(self):
+        self.ledger["sends"] = [
+            "2026-10-26T10:00:00+05:30",  # DAY-6: in window
+            "2026-10-25T10:00:00+05:30",  # DAY-7: out of window
+        ]
+        self.assertEqual(sends_last_7d(self.ledger, DAY), 1)
+
+    def test_window_smaller_than_one_day_is_refused(self):
+        with self.assertRaises(ValueError):
+            sends_last_days(self.ledger, DAY, 0)
+
+    def test_ninety_sends_in_window_refuses_the_pass_before_any_driver(self):
+        self.ledger["sends"] = ["2026-10-27T09:00:00+05:30"] * HARD_WEEKLY_CAP
+        started = []
+
+        def factory():
+            started.append(True)
+            return FakeDriver(["sent"])
+
+        summary = self.run_live([cand("late")], factory=factory)
+        self.assertEqual(summary["sent"], 0)
+        self.assertEqual(summary["stopped"], "weekly_cap_reached")
+        self.assertEqual(started, [], "a refused pass must not create a driver")
+        self.assertEqual(self.audit_rows()[-1]["decision"], "refuse")
+
+    def test_pass_halts_mid_loop_when_the_ninetieth_send_lands(self):
+        self.ledger["sends"] = ["2026-10-27T09:00:00+05:30"] * (HARD_WEEKLY_CAP - 1)
+        summary = self.run_live([cand(f"p{i}") for i in range(4)], cap=20)
+        self.assertEqual(summary["sent"], 1)
+        self.assertEqual(summary["stopped"], "weekly_cap_reached")
+        self.assertEqual(len(self.driver.calls), 1)
+
+    def test_eighty_nine_sends_still_allow_a_full_daily_pass(self):
+        self.ledger["sends"] = ["2026-10-27T09:00:00+05:30"] * 70
+        summary = self.run_live([cand("a"), cand("b")])
+        self.assertEqual(summary["sent"], 2)
+        self.assertIsNone(summary["stopped"])
+
+
+class QueueOrder(BotCase):
+    def tiered(self, slug, entry):
+        candidate = cand(slug)
+        candidate["entry"] = entry
+        return candidate
+
+    def test_explicit_entry_wins_over_status(self):
+        self.assertEqual(entry_variant({"entry": ENTRY_DIRECT, "status": "queued"}), ENTRY_DIRECT)
+        self.assertEqual(entry_variant({"entry": "bogus"}), ENTRY_UNKNOWN)
+        self.assertEqual(entry_variant({}), ENTRY_UNKNOWN)
+        self.assertEqual(entry_variant(None), ENTRY_UNKNOWN)
+
+    def test_prior_follow_only_and_note_required_read_as_more(self):
+        self.assertEqual(entry_variant({"status": FOLLOW_ONLY}), ENTRY_MORE)
+        self.assertEqual(entry_variant({"status": NOTE_REQUIRED}), ENTRY_MORE)
+        self.assertEqual(entry_variant({"status": "queued"}), ENTRY_UNKNOWN)
+
+    def test_tiers_rank_direct_then_more_then_unknown(self):
+        ledger = {"persons": {"in:m": {"status": FOLLOW_ONLY}}, "sends": []}
+        self.assertLess(queue_tier(self.tiered("d", ENTRY_DIRECT), ledger),
+                        queue_tier(self.tiered("m", ENTRY_UNKNOWN), ledger))
+        self.assertLess(queue_tier(self.tiered("m", ENTRY_UNKNOWN), ledger),
+                        queue_tier(self.tiered("u", ENTRY_UNKNOWN), ledger))
+        self.assertEqual(queue_tier({"profile_url": ""}, ledger), ENTRY_TIERS[ENTRY_UNKNOWN])
+
+    def test_run_sends_in_tier_order_with_stable_fifo_within_tier(self):
+        submitted = [
+            self.tiered("u1", ENTRY_UNKNOWN),
+            self.tiered("d", ENTRY_DIRECT),
+            self.tiered("m", ENTRY_MORE),
+            self.tiered("u2", ENTRY_UNKNOWN),
+        ]
+        summary = self.run_live(submitted, script=["sent"] * 4)
+        self.assertEqual(summary["sent"], 4)
+        sent_urls = [c[0]["profile_url"] for c in self.driver.calls]
+        self.assertEqual(sent_urls, [f"https://www.linkedin.com/in/{s}/" for s in ("d", "m", "u1", "u2")])
+        tiers = [r["tier"] for r in summary["decisions"]]
+        self.assertEqual(tiers, [ENTRY_DIRECT, ENTRY_MORE, ENTRY_UNKNOWN, ENTRY_UNKNOWN])
+
+
 class DryRun(BotCase):
     def test_dry_run_sends_nothing_and_never_builds_a_driver(self):
         def exploding_factory():
@@ -391,7 +482,7 @@ class StopConditions(BotCase):
         queue = self.tmp / "q.json"
         queue.write_text(json.dumps([cand("a"), cand("b")]), encoding="utf-8")
         real_driver = mod.PlaywrightDriver
-        mod.PlaywrightDriver = lambda profile_dir: FakeDriver([RateLimited("weekly limit")])
+        mod.PlaywrightDriver = lambda profile_dir, **kw: FakeDriver([RateLimited("weekly limit")])
         try:
             args = build_parser().parse_args([
                 "run", "--candidates", str(queue), "--state-dir", str(self.state),
@@ -718,6 +809,26 @@ class DiscoveryRun(BotCase):
         rows = self.audit_rows()
         self.assertEqual(rows[-2]["decision"], "queue")
         self.assertIn("role:recruiter", rows[-2]["reason"])
+
+    def test_view_observed_entry_persists_to_the_queued_person(self):
+        thin = [search_card("v", headline="")]
+        driver = FakeDriver(
+            searches=[thin],
+            views=[{"headline": "Tech Recruiter", "location": "India", "entry": ENTRY_DIRECT}],
+        )
+        summary = self.discover([seed_query()], driver=driver, max_profile_views=1)
+        self.assertEqual(summary["queued"], 1)
+        self.assertEqual(self.ledger["persons"]["in:v"].get("entry"), ENTRY_DIRECT)
+
+    def test_view_without_entry_leaves_the_queued_person_untiered(self):
+        thin = [search_card("w", headline="")]
+        driver = FakeDriver(
+            searches=[thin],
+            views=[{"headline": "Tech Recruiter", "location": "India"}],
+        )
+        summary = self.discover([seed_query()], driver=driver, max_profile_views=1)
+        self.assertEqual(summary["queued"], 1)
+        self.assertNotIn("entry", self.ledger["persons"]["in:w"])
 
     def test_budgets_bind_searches_pages_and_views(self):
         pages = [[search_card(f"p{i}")] for i in range(4)]
@@ -1173,6 +1284,199 @@ class MoreMenuLiRead(unittest.TestCase):
         self.assertIn("Connect", page.clicked,
                       f"the observed bare Connect must be clicked, clicked={page.clicked}")
         self.assertEqual(sent_notes, [None], "bare invite carries no note")
+
+
+class StepVerify(unittest.TestCase):
+    """Self-verifying More->Connect transitions: every UI step asserts
+    before proceeding (menu non-empty + entry match; dialog target), each
+    step gets ONE bounded re-attempt, and every attempt is captured win or
+    lose. Step misses skip with the step reason - never a blind click."""
+
+    CHROME = ["Reset", "Done", "Close Modal Dialog"]
+    MENU = ["Send profile in a message", "Save to PDF", "Connect",
+            "Report Arnab", "Block Arnab", "About this member"]
+    CAND = {"name": "Arnab Banerjee",
+            "profile_url": "https://www.linkedin.com/in/arnab-banerjee-86aa6186/"}
+
+    class FakeClick:
+        def __init__(self, log, label):
+            self.log = log
+            self.label = label
+
+        def click(self, timeout=None):
+            self.log.append(self.label)
+
+    class FakePage:
+        """Scripted reads (one item list per menu read) and scripted entry-
+        click failures; More expands always land."""
+
+        def __init__(self, reads, bad_clicks=0):
+            self.reads = list(reads)
+            self.bad_clicks = bad_clicks
+            self.expands = 0
+            self.entry_clicks = []
+            self.escapes = 0
+
+        def get_by_role(self, role):
+            outer = self
+
+            class Role:
+                def nth(self, index):
+                    outer.expands += 1
+                    return StepVerify.FakeClick([], f"more[{index}]")
+
+            return Role()
+
+        def wait_for_timeout(self, ms):
+            pass
+
+        def evaluate(self, script):
+            if len(self.reads) > 1:
+                return self.reads.pop(0)
+            return self.reads[0]
+
+        def locator(self, selector):
+            outer = self
+
+            class Loc:
+                def get_by_text(self, text, exact=False):
+                    class First:
+                        @property
+                        def first(self):
+                            outer2 = outer
+
+                            class Click:
+                                def click(self, timeout=None):
+                                    if outer2.bad_clicks > 0:
+                                        outer2.bad_clicks -= 1
+                                        raise RuntimeError("click intercepted")
+                                    outer2.entry_clicks.append(text)
+
+                            return Click()
+
+                    return First()
+
+            return Loc()
+
+        @property
+        def keyboard(self):
+            outer = self
+
+            class Keys:
+                def press(self, key):
+                    outer.escapes += 1
+
+            return Keys()
+
+    def flow(self, page, dialog=True, note=None):
+        driver = PlaywrightDriver(Path("/tmp/lc-test-profile"))
+        driver._page_state = lambda pg: None
+        verdicts = list(dialog) if isinstance(dialog, (list, tuple)) else [dialog]
+        driver._dialog_targets = lambda pg, c: verdicts.pop(0) if len(verdicts) > 1 else verdicts[0]
+        sent = []
+        driver._send_bare_from_dialog = lambda pg, n: (sent.append(n), "sent")[1]
+        result = PlaywrightDriver._more_connect_flow(driver, page, [0], dict(self.CAND), note)
+        return result, sent
+
+    def test_menu_miss_twice_returns_menu_missed(self):
+        page = self.FakePage([self.CHROME])
+        result, _ = self.flow(page)
+        self.assertEqual(result, MENU_MISSED)
+        self.assertEqual(page.expands, 2, "initial expand + ONE bounded re-expand")
+        self.assertEqual(page.entry_clicks, [], "no entry click without a verified menu")
+
+    def test_menu_recovers_on_reread_then_sends(self):
+        page = self.FakePage([self.CHROME, self.MENU])
+        result, sent = self.flow(page)
+        self.assertEqual(result, "sent")
+        self.assertEqual(page.entry_clicks, ["Connect"])
+        self.assertEqual(sent, [None], "bare invite carries no note")
+
+    def test_dialog_miss_twice_returns_dialog_missed(self):
+        page = self.FakePage([self.MENU], )
+        result, _ = self.flow(page, dialog=[False, False])
+        self.assertEqual(result, DIALOG_MISSED)
+        self.assertEqual(page.entry_clicks, ["Connect", "Connect"],
+                          "ONE bounded re-press of the verified entry")
+
+    def test_dialog_recovers_on_repress_then_sends(self):
+        page = self.FakePage([self.MENU])
+        result, sent = self.flow(page, dialog=[False, True])
+        self.assertEqual(result, "sent")
+        self.assertEqual(sent, [None])
+
+    def test_entry_click_failure_still_misses_without_dialog(self):
+        page = self.FakePage([self.MENU], bad_clicks=9)
+        result, _ = self.flow(page, dialog=True)
+        self.assertEqual(result, DIALOG_MISSED)
+        self.assertEqual(page.entry_clicks, [], "intercepted clicks never reach the dialog")
+
+    def test_step_misses_join_the_storm_streak_without_ledger_writes(self):
+        ledger = {"persons": {}, "sends": []}
+        from tempfile import TemporaryDirectory
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        audit_path = Path(tmp.name) / "audit.jsonl"
+        summary = run_queue(
+            [dict(self.CAND, profile_url=f"https://www.linkedin.com/in/p{i}/") for i in range(5)],
+            {"min_score": 0}, ledger, audit_path,
+            live=True, cap=20, day=DAY, window=ALWAYS, note=None, limit=0,
+            min_delay=0, max_delay=0,
+            driver_factory=lambda: FakeDriver([MENU_MISSED, DIALOG_MISSED] * 3),
+            now_iso=NOW,
+        )
+        self.assertEqual(summary["stopped"], "unknown_controls")
+        self.assertEqual(summary["unknown_skips"], 4)
+        self.assertEqual(ledger["persons"], {})
+        rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+        reasons = [r["reason"] for r in rows]
+        self.assertTrue(any("re-expanded once" in reason for reason in reasons))
+        self.assertTrue(any("re-pressed once" in reason for reason in reasons))
+
+    def test_capture_writes_screenshot_and_dom_snippet(self):
+        from tempfile import TemporaryDirectory
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+
+        class ShotPage:
+            def __init__(self):
+                self.shots = []
+
+            def screenshot(self, path):
+                self.shots.append(path)
+                Path(path).write_bytes(b"PNG")
+
+            def evaluate(self, script):
+                return "Arnab Banerjee profile DOM"
+
+        driver = PlaywrightDriver(Path("/tmp/lc-test-profile"), capture_dir=Path(tmp.name))
+        page = ShotPage()
+        driver._capture(page, "in-arnab", "more0_menu", True)
+        files = sorted(p.name for p in Path(tmp.name).iterdir())
+        self.assertEqual(len(files), 2)
+        self.assertTrue(any(name.endswith("_ok.png") for name in files))
+        txt = next(p for p in Path(tmp.name).iterdir() if p.suffix == ".txt")
+        self.assertIn("Arnab Banerjee", txt.read_text(encoding="utf-8"))
+
+    def test_capture_failure_never_fails_the_run(self):
+        from tempfile import TemporaryDirectory
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+
+        class BadPage:
+            def screenshot(self, path):
+                raise RuntimeError("no display")
+
+            def evaluate(self, script):
+                raise RuntimeError("gone")
+
+        driver = PlaywrightDriver(Path("/tmp/lc-test-profile"), capture_dir=Path(tmp.name))
+        driver._capture(BadPage(), "in-x", "step", False)  # must not raise
+
+    def test_slug_is_filesystem_safe(self):
+        self.assertEqual(PlaywrightDriver._slug(self.CAND), "in-arnab-banerjee-86aa6186")
+        self.assertEqual(PlaywrightDriver._slug({"profile_url": "   "}), "unkeyable")
+        self.assertEqual(PlaywrightDriver._slug({}), "unkeyable")
 
 
 class NoteRequired(BotCase):

@@ -63,6 +63,20 @@ per-file diff commands.
 
 ### Fixed
 
+- **LinkedIn connect bot overnight hardening** - three rails for tomorrow's
+  send pass: (1) self-verifying transitions - every More expand asserts a
+  non-empty menu containing the verified entry before clicking (one bounded
+  re-expand + re-read), every Connect click asserts a verified dialog before
+  sending (one bounded re-press), every attempt saves a screenshot + DOM
+  snippet under `linkedin_connect/diag_run/`, and step misses skip as
+  `menu_missed`/`dialog_missed` inside the unknown-controls storm budget;
+  (2) queue ordering by invitable-confidence - direct-Connect first,
+  More-overflow second, unknown variants last, scored from cached discovery
+  data only (the `entry` recorded on discovery profile views,
+  prior `follow_only`/`note_required` outcomes), stable within a tier;
+  (3) hard weekly cap of 90 sends on a rolling 7-day window alongside the
+  daily 20, with refuse-to-start and mid-loop halt, surfaced in `status`.
+
 - **LinkedIn connect bot reads More-menu `li` items** - the live
   More -> Connect path only queried `[role="menuitem"]`/button/anchor (plus
   dialog buttons), but LinkedIn renders the overflow entries as plain `<li>`
