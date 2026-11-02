@@ -411,7 +411,7 @@ def score_candidate(candidate: dict, cfg: dict) -> tuple[float, list[str]]:
 
 
 def blank_ledger() -> dict:
-    return {"persons": {}, "sends": []}
+    return {"persons": {}, "sends": [], "queued_log": []}
 
 
 def load_ledger(path: Path) -> dict:
@@ -425,8 +425,11 @@ def load_ledger(path: Path) -> dict:
         sys.exit(f"{path}: expected a JSON object with persons/sends")
     data.setdefault("persons", {})
     data.setdefault("sends", [])
+    data.setdefault("queued_log", [])
     if not isinstance(data["persons"], dict) or not isinstance(data["sends"], list):
         sys.exit(f"{path}: expected persons to be an object and sends to be a list")
+    if not isinstance(data["queued_log"], list):
+        sys.exit(f"{path}: expected queued_log to be a list")
     return data
 
 
@@ -865,8 +868,14 @@ def discovery_queries(cfg: dict) -> list[dict]:
 
 
 def queued_today(ledger: dict, day: str) -> int:
-    """Persons newly queued by discovery today - the discovery-side cap that
-    mirrors the invite cap."""
+    """New profiles queued by discovery today - the discovery-side cap that
+    mirrors the invite cap. Counted cumulatively from the append-only queue
+    log: resolving a profile (send or skip) must NOT free its slot, or
+    discovery could queue replacements without bound. Ledgers predating the
+    log fall back to still-queued persons."""
+    log = ledger.get("queued_log")
+    if log:
+        return sum(1 for ts in log if str(ts)[:10] == day)
     count = 0
     for person in (ledger.get("persons", {}) or {}).values():
         if person.get("status") == "queued" and str(person.get("last_ts") or "")[:10] == day:
@@ -1338,6 +1347,7 @@ def handle_card(
         "headline": candidate["headline"],
         "location": candidate["location"],
     }
+    ledger.setdefault("queued_log", []).append(timestamp)
     summary["queued"] += 1
     record = {
         "ts": timestamp, "profile": key, "name": candidate["name"],

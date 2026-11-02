@@ -794,6 +794,38 @@ class DiscoveryRun(BotCase):
         self.assertEqual(summary["searches_executed"], 0)
 
 
+class QueueCapAccounting(BotCase):
+    def test_queue_log_counts_cumulatively_despite_resolution(self):
+        self.ledger["queued_log"] = [f"{DAY}T08:00:00+05:30", f"{DAY}T09:00:00+05:30"]
+        self.ledger["persons"] = {
+            "in:sent": {"status": "invited", "last_ts": NOW},
+            "in:q": {"status": "queued", "last_ts": NOW},
+        }
+        self.assertEqual(queued_today(self.ledger, DAY), 2,
+                         "resolving a profile must not free its discovery slot")
+
+    def test_legacy_ledger_falls_back_to_still_queued(self):
+        self.assertNotIn("queued_log", self.ledger)
+        self.ledger["persons"] = {
+            "in:q": {"status": "queued", "last_ts": NOW},
+            "in:old": {"status": "invited", "last_ts": NOW},
+        }
+        self.assertEqual(queued_today(self.ledger, DAY), 1)
+
+    def test_queue_event_appends_to_log(self):
+        cache = {"version": 1, "pages": {}}
+        summary = run_discover(
+            [seed_query()], self.cfg, self.ledger, cache, self.audit,
+            live=True, day=DAY, window=ALWAYS, max_searches=1, max_pages=1,
+            max_profile_views=0, max_queued=20, search_min_delay=0,
+            search_max_delay=0,
+            driver_factory=lambda: FakeDriver(searches=[[search_card("a")]]),
+            now_iso=NOW,
+        )
+        self.assertEqual(summary["queued"], 1)
+        self.assertEqual(self.ledger["queued_log"], [NOW])
+
+
 class DiscoveryDryRun(BotCase):
     def test_dry_run_touches_nothing(self):
         cache = {"version": 1, "pages": {
