@@ -18,8 +18,11 @@ from tempfile import TemporaryDirectory
 from tools.linkedin_connect import (
     DISCOVERY_STATUSES,
     FOLLOW_ONLY,
+    MAX_CONSECUTIVE_UNKNOWN,
+    NOTE_REQUIRED,
     RUN_SKIP_STATUSES,
     TERMINAL_STATUSES,
+    UNKNOWN_CONTROLS,
     CaptchaChallenge,
     InviteDriver,
     InviteStop,
@@ -36,6 +39,7 @@ from tools.linkedin_connect import (
     classify_interstitial,
     classify_invite_entry,
     normalize_button_name,
+    pick_invite_entry,
     resolve_entry,
     cmd_discover,
     cmd_run,
@@ -992,6 +996,87 @@ class DualSignalEntry(unittest.TestCase):
         self.assertEqual(resolve_entry("follow_only", "follow_only"), "follow_only")
         self.assertEqual(resolve_entry("connect", None), "connect")
         self.assertEqual(resolve_entry("follow_only", None), "follow_only")
+
+
+class MoreConnectEntry(unittest.TestCase):
+    def test_named_entry_is_clickable_verbatim(self):
+        names = ["Save to PDF", "Invite Arnab Banerjee to connect", "Report / Block"]
+        self.assertEqual(pick_invite_entry(names, "Arnab Banerjee"),
+                         "Invite Arnab Banerjee to connect")
+
+    def test_match_is_case_insensitive(self):
+        self.assertEqual(pick_invite_entry(["INVITE ARNAB BANERJEE TO CONNECT"], "arnab banerjee"),
+                         "INVITE ARNAB BANERJEE TO CONNECT")
+
+    def test_bare_connect_is_never_enough(self):
+        self.assertIsNone(pick_invite_entry(["Connect", "Message"], "Arnab Banerjee"),
+                          "a bare Connect could belong to a suggested profile - never click it")
+
+    def test_other_persons_entry_is_rejected(self):
+        self.assertIsNone(pick_invite_entry(["Invite Mohan Kumar to connect"], "Arnab Banerjee"))
+
+    def test_empty_or_nameless_never_matches(self):
+        self.assertIsNone(pick_invite_entry([], "Arnab Banerjee"))
+        self.assertIsNone(pick_invite_entry(["Invite Arnab Banerjee to connect"], ""))
+        self.assertIsNone(pick_invite_entry(["Invite Arnab Banerjee to connect"], None))
+
+
+class NoteRequired(BotCase):
+    def test_note_required_skips_and_persists_without_cap(self):
+        summary = self.run_live([cand("n"), cand("s")], script=[NOTE_REQUIRED, "sent"])
+        self.assertEqual(summary["sent"], 1)
+        self.assertEqual(summary["skipped"], 1)
+        self.assertEqual(self.ledger["persons"]["in:n"]["status"], NOTE_REQUIRED)
+        self.assertEqual(len(self.ledger["sends"]), 1)
+        self.assertIn(NOTE_REQUIRED, RUN_SKIP_STATUSES)
+        self.assertIn(NOTE_REQUIRED, DISCOVERY_STATUSES)
+        reasons = [r["reason"] for r in summary["decisions"] if r.get("result") == NOTE_REQUIRED]
+        self.assertTrue(any("no note is ever written" in reason for reason in reasons))
+
+
+class UnknownStorm(BotCase):
+    def test_fourth_consecutive_unknown_halts(self):
+        self.assertEqual(MAX_CONSECUTIVE_UNKNOWN, 3)
+        driver = FakeDriver(script=[UNKNOWN_CONTROLS] * 6)
+        summary = self.run_live([cand(f"u{i}") for i in range(6)], factory=lambda: driver)
+        self.assertEqual(summary["stopped"], "unknown_controls")
+        self.assertEqual(len(driver.calls), 4, "the 4th consecutive unknown halts the run")
+        self.assertEqual(summary["unknown_skips"], 4)
+        self.assertEqual(summary["sent"], 0)
+        self.assertNotIn("in:u0", self.ledger["persons"],
+                         "unknown profiles stay queued - the ledger is never written over")
+
+    def test_any_other_decision_resets_the_streak(self):
+        driver = FakeDriver(script=[UNKNOWN_CONTROLS, "sent", UNKNOWN_CONTROLS,
+                                    UNKNOWN_CONTROLS, UNKNOWN_CONTROLS, "sent"])
+        summary = self.run_live([cand(f"u{i}") for i in range(6)], factory=lambda: driver)
+        self.assertIsNone(summary["stopped"])
+        self.assertEqual(summary["sent"], 2)
+        self.assertEqual(len(driver.calls), 6)
+
+    def test_cli_halt_is_loud_with_exit_2(self):
+        import io
+        from contextlib import redirect_stderr
+
+        from tools import linkedin_connect as mod
+
+        queue = self.tmp / "q.json"
+        queue.write_text(json.dumps([cand(f"u{i}") for i in range(5)]), encoding="utf-8")
+        real_driver = mod.PlaywrightDriver
+        mod.PlaywrightDriver = lambda profile_dir, **kw: FakeDriver(script=[UNKNOWN_CONTROLS] * 5)
+        try:
+            args = build_parser().parse_args([
+                "run", "--candidates", str(queue), "--state-dir", str(self.state),
+                "--window", ALWAYS, "--live",
+            ])
+            err = io.StringIO()
+            with redirect_stderr(err):
+                rc = cmd_run(args)
+        finally:
+            mod.PlaywrightDriver = real_driver
+        self.assertEqual(rc, 2)
+        self.assertIn("BOT STOPPED", err.getvalue())
+        self.assertIn("consecutive", err.getvalue())
 
 
 class LedgerHandoff(BotCase):

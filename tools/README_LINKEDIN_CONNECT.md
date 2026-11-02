@@ -78,7 +78,7 @@ discover-queued profiles instead (and composes with `--candidates`).
 | Discovery budgets | At most 3 seeded searches, 2 pages each, 5 profile views per run (all tunable down in the targets file). Raw pages are cached in `linkedin_connect/discovery_cache.json` so a re-run re-scores from disk and never re-scrapes. |
 | Append-only audit log | `linkedin_connect/audit.jsonl`: who, why they matched, timestamp, result. Never rewritten. |
 | No credentials in repo/logs | There is no `--password`/`--token` flag at all. Login state lives in a persistent browser profile outside the repo (`~/.linkedin-connect-bot/`). A scrubber redacts credential-looking text before it can reach logs. |
-| Dedupe | Ledger statuses `invited / connected / declined / withdrawn` — plus discovery's `queued` — are never re-queued or re-invited, across restarts. |
+| Dedupe | Ledger statuses `invited / connected / declined / withdrawn` — plus discovery's `queued` — are never re-queued or re-invited, across restarts. Follow-only profiles go through More → Connect (verified `Invite <name> to connect` entry only, bare send); forced-note dialogs skip as `note_required` (a note is never written); unreadable profiles skip as `unknown_controls` (max 3 per run, 4th consecutive stops loud). |
 
 ## Setup for live sending
 

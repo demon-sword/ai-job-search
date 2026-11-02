@@ -202,9 +202,30 @@ def resolve_entry(acc_entry: str, text_entry: str | None) -> str:
 
 
 FOLLOW_ONLY = "follow_only"
+NOTE_REQUIRED = "note_required"
+UNKNOWN_CONTROLS = "unknown_controls"
 # run skips these without sending; discovery never re-queues them.
-RUN_SKIP_STATUSES = TERMINAL_STATUSES | {FOLLOW_ONLY}
-DISCOVERY_STATUSES = TERMINAL_STATUSES | {"queued", FOLLOW_ONLY}
+# unknown_controls is deliberately NOT sticky: an unreadable profile is
+# retried next run, while the per-run storm guard watches for UI drift.
+RUN_SKIP_STATUSES = TERMINAL_STATUSES | {FOLLOW_ONLY, NOTE_REQUIRED}
+DISCOVERY_STATUSES = TERMINAL_STATUSES | {"queued", FOLLOW_ONLY, NOTE_REQUIRED}
+MAX_CONSECUTIVE_UNKNOWN = 3
+
+_INVITE_ENTRY_RE = re.compile(r"^Invite (.+) to connect$", re.IGNORECASE)
+
+
+def pick_invite_entry(names, candidate_name: str) -> str | None:
+    """Choose the exact More-menu string to click, or None. Only a full
+    "Invite <candidate name> to connect" match (case-insensitive) is
+    clickable: a bare "Connect" anywhere could belong to a suggested
+    profile, and clicking that invites a stranger. Returns the observed
+    string verbatim for an exact-text click - never a reconstruction."""
+    want = (candidate_name or "").strip().lower()
+    for raw in names or []:
+        match = _INVITE_ENTRY_RE.match(str(raw or "").strip())
+        if match and match.group(1).strip().lower() == want and want:
+            return str(raw).strip()
+    return None
 
 
 _CHALLENGE_URL = re.compile(r"/checkpoint/challenge", re.I)
@@ -579,9 +600,10 @@ class PlaywrightDriver(InviteDriver):
             text_entry = classify_entry_from_texts((card_text or "").splitlines())
             entry = resolve_entry(acc_entry, text_entry)
             if entry == "follow_only":
-                return FOLLOW_ONLY
+                # Creator-mode profiles accept invites via More -> Connect.
+                return self._more_connect_flow(page, card, candidate, note)
             if entry == "unknown":
-                raise UnexpectedUI("no Connect control and no Follow control on profile")
+                return UNKNOWN_CONTROLS
             connect = card.get_by_role("button", name=re.compile(r"^\W*Connect\s*$", re.I)).first
             try:
                 connect.click(timeout=10000)
@@ -590,37 +612,7 @@ class PlaywrightDriver(InviteDriver):
                 raise
             except Exception as exc:
                 raise UnexpectedUI(f"Connect control did not behave: {exc}") from exc
-            stop = self._page_state(page)
-            if stop is not None:
-                raise stop
-            dialog_text = (page.evaluate("() => document.body ? document.body.innerText : ''") or "").lower()
-            if "invitation limit" in dialog_text or "you've reached" in dialog_text:
-                raise RateLimited("invite-limit banner after pressing Connect")
-            if note:
-                try:
-                    add_note = page.get_by_role("button", name=re.compile(r"Add a note", re.I)).first
-                    if add_note.count() > 0:
-                        add_note.click(timeout=10000)
-                        box = page.get_by_role("textbox").first
-                        box.fill(note[:NOTE_LIMIT], timeout=10000)
-                except InviteStop:
-                    raise
-                except Exception as exc:
-                    raise UnexpectedUI(f"note dialog did not behave: {exc}") from exc
-            try:
-                send = page.get_by_role("button", name=re.compile(r"^Send", re.I)).first
-                if send.count() == 0:
-                    raise UnexpectedUI("invite dialog has no Send button")
-                send.click(timeout=10000)
-                page.wait_for_timeout(1500)
-            except InviteStop:
-                raise
-            except Exception as exc:
-                raise UnexpectedUI(f"Send button did not behave: {exc}") from exc
-            stop = self._page_state(page)
-            if stop is not None:
-                raise stop
-            return "sent"
+            return self._send_bare_from_dialog(page, note)
         finally:
             try:
                 page.close()
@@ -636,6 +628,90 @@ class PlaywrightDriver(InviteDriver):
             except Exception:
                 pass
         self._ctx, self._pw = None, None
+
+    def _more_connect_flow(self, page, card, candidate: dict, note: str | None) -> str:
+        """Follow-only entry: open More, choose the verified Connect item,
+        send bare. Returns "sent", FOLLOW_ONLY (no usable entry), or
+        NOTE_REQUIRED (dialog forces a note - never written). Mechanical
+        failures map to UNKNOWN_CONTROLS so the storm guard watches them;
+        the challenge family still raises."""
+        try:
+            more = card.get_by_role("button", name=re.compile(r"^\W*More\s*$", re.I)).first
+            if more.count() == 0:
+                return FOLLOW_ONLY
+            more.click(timeout=10000)
+            page.wait_for_timeout(1500)
+        except InviteStop:
+            raise
+        except Exception:
+            return UNKNOWN_CONTROLS
+        stop = self._page_state(page)
+        if stop is not None:
+            raise stop
+        try:
+            menu_names = page.evaluate(
+                """() => Array.from(document.querySelectorAll(
+                    '[role="menu"] [role="menuitem"], [role="menu"] button, '
+                    '[role="menu"] a, [role="dialog"] button'
+                )).map(e => (e.getAttribute('aria-label') || e.innerText || '').trim())"""
+            )
+        except Exception:
+            return UNKNOWN_CONTROLS
+        entry_name = pick_invite_entry(menu_names or [], candidate.get("name") or "")
+        if entry_name is None:
+            return FOLLOW_ONLY
+        try:
+            page.locator(
+                'button, a, [role="button"], [role="menuitem"], [role="menuitemcheckbox"], li'
+            ).get_by_text(entry_name, exact=True).first.click(timeout=10000)
+            page.wait_for_timeout(1500)
+        except InviteStop:
+            raise
+        except Exception:
+            return UNKNOWN_CONTROLS
+        return self._send_bare_from_dialog(page, note)
+
+    def _send_bare_from_dialog(self, page, note: str | None) -> str:
+        """Complete an opened invite dialog with a bare Send. A dialog that
+        offers no Send but demands a note reports NOTE_REQUIRED - a note is
+        never written, no exceptions. Anything else unrecognized raises."""
+        stop = self._page_state(page)
+        if stop is not None:
+            raise stop
+        dialog_text = (page.evaluate("() => document.body ? document.body.innerText : ''") or "").lower()
+        if "invitation limit" in dialog_text or "you've reached" in dialog_text:
+            raise RateLimited("invite-limit banner after pressing Connect")
+        if note:
+            try:
+                add_note = page.get_by_role("button", name=re.compile(r"Add a note", re.I)).first
+                if add_note.count() > 0:
+                    add_note.click(timeout=10000)
+                    box = page.get_by_role("textbox").first
+                    box.fill(note[:NOTE_LIMIT], timeout=10000)
+            except InviteStop:
+                raise
+            except Exception as exc:
+                raise UnexpectedUI(f"note dialog did not behave: {exc}") from exc
+        try:
+            send = page.get_by_role("button", name=re.compile(r"^Send", re.I)).first
+            if send.count() > 0:
+                send.click(timeout=10000)
+                page.wait_for_timeout(1500)
+            else:
+                try:
+                    textbox = page.get_by_role("textbox").first
+                    has_box = textbox.count() > 0
+                except Exception:
+                    has_box = False
+                if has_box:
+                    return NOTE_REQUIRED
+                raise UnexpectedUI("invite dialog has no Send button")
+        except Exception as exc:
+            raise UnexpectedUI(f"Send button did not behave: {exc}") from exc
+        stop = self._page_state(page)
+        if stop is not None:
+            raise stop
+        return "sent"
 
     def _checked_goto(self, url: str, candidate: str) -> object:
         """Open a page and fail closed on anything but the expected UI."""
@@ -851,7 +927,10 @@ def run_queue(
     Dry-run (live=False) never creates a driver and never mutates the ledger:
     it logs exactly what WOULD be sent. Live runs mutate the ledger only
     after an outcome is known, and stop at the first InviteStop with no
-    retry of the failed - or any later - candidate.
+    retry of the failed - or any later - candidate. Per-profile unknown
+    controls skip against a storm budget instead: the 4th consecutive
+    unknown halts the run loud (UI drift must be noticed, not plowed
+    through), while anything else decided in between resets the count.
     """
     rng = rng or random.Random()
     timestamp = now_iso or utcnow_iso()
@@ -862,6 +941,7 @@ def run_queue(
         "sent": 0,
         "would_send": 0,
         "skipped": 0,
+        "unknown_skips": 0,
         "stopped": None,
         "decisions": [],
     }
@@ -883,6 +963,7 @@ def run_queue(
         driver.start()
 
     sent_this_run = 0
+    unknown_streak = 0
     try:
         for candidate in candidates:
             if limit > 0 and (summary["sent"] + summary["would_send"] + summary["skipped"]) >= limit:
@@ -890,6 +971,7 @@ def run_queue(
             try:
                 key = canonical_key(str(candidate.get("profile_url") or ""))
             except ValueError as exc:
+                unknown_streak = 0
                 summary["skipped"] += 1
                 record = {"ts": timestamp, "decision": "skip", "reason": f"unkeyable: {exc}", "live": live}
                 append_audit(audit_path, record)
@@ -897,6 +979,7 @@ def run_queue(
                 continue
             known = (ledger.get("persons", {}) or {}).get(key)
             if known and known.get("status") in RUN_SKIP_STATUSES:
+                unknown_streak = 0
                 summary["skipped"] += 1
                 record = {
                     "ts": timestamp, "profile": key, "name": candidate.get("name"),
@@ -907,6 +990,7 @@ def run_queue(
                 continue
             score, reasons = score_candidate(candidate, cfg)
             if score < min_score:
+                unknown_streak = 0
                 summary["skipped"] += 1
                 record = {
                     "ts": timestamp, "profile": key, "name": candidate.get("name"),
@@ -929,6 +1013,7 @@ def run_queue(
                 summary["decisions"].append(record)
                 break
             if not live:
+                unknown_streak = 0
                 summary["would_send"] += 1
                 record = {
                     "ts": timestamp, "profile": key, "name": candidate.get("name"),
@@ -961,6 +1046,25 @@ def run_queue(
                 "profile_url": candidate.get("profile_url") or prev.get("profile_url"),
                 "name": candidate.get("name") or prev.get("name"),
             }
+            if outcome == UNKNOWN_CONTROLS:
+                # No ledger write: the profile stays queued for a later run,
+                # while the per-run storm guard watches for UI drift.
+                unknown_streak += 1
+                summary["skipped"] += 1
+                summary["unknown_skips"] += 1
+                record = {
+                    "ts": timestamp, "profile": key, "name": candidate.get("name"),
+                    "decision": "skip", "result": outcome,
+                    "reason": f"unknown controls, {unknown_streak} consecutive",
+                    "score": score, "live": True,
+                }
+                append_audit(audit_path, record)
+                summary["decisions"].append(record)
+                if unknown_streak > MAX_CONSECUTIVE_UNKNOWN:
+                    summary["stopped"] = "unknown_controls"
+                    break
+                continue
+            unknown_streak = 0
             if outcome == "sent":
                 person["status"] = "invited"
                 ledger["sends"].append(timestamp)
@@ -972,6 +1076,8 @@ def run_queue(
                 person["status"] = "connected"
             elif outcome == FOLLOW_ONLY:
                 person["status"] = FOLLOW_ONLY
+            elif outcome == NOTE_REQUIRED:
+                person["status"] = NOTE_REQUIRED
             else:
                 person["status"] = str(outcome)
             ledger.setdefault("persons", {})[key] = person
@@ -980,7 +1086,15 @@ def run_queue(
                 record = {
                     "ts": timestamp, "profile": key, "name": candidate.get("name"),
                     "decision": "skip", "result": outcome,
-                    "reason": "follow-only profile (creator mode): no Connect control, never force-clicked",
+                    "reason": "follow-only profile (creator mode): no usable Connect entry, never force-clicked",
+                    "score": score, "live": True,
+                }
+            elif outcome == NOTE_REQUIRED:
+                summary["skipped"] += 1
+                record = {
+                    "ts": timestamp, "profile": key, "name": candidate.get("name"),
+                    "decision": "skip", "result": outcome,
+                    "reason": "dialog forces a note: bare send impossible, and no note is ever written",
                     "score": score, "live": True,
                 }
             else:
@@ -1398,6 +1512,11 @@ def cmd_run(args) -> int:
         print(f"live: {summary['sent']} sent, {summary['skipped']} skipped.")
     if summary["stopped"] == "cap_reached":
         print(f"daily cap reached ({cap}) - remaining queue deferred to tomorrow.")
+    if summary["stopped"] == "unknown_controls":
+        print(f"BOT STOPPED - {MAX_CONSECUTIVE_UNKNOWN + 1} consecutive profiles with unreadable "
+              f"controls; LinkedIn UI may have drifted. Ledger saved, audit holds every skip.",
+              file=sys.stderr)
+        return EXIT_STOPPED
     if summary["stopped"] == "outside_window":
         print(f"refused: outside the daily window {args.window} - nothing sent.", file=sys.stderr)
         return 1
