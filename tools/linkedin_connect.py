@@ -1045,6 +1045,12 @@ def run_queue(
                 "reasons": reasons,
                 "profile_url": candidate.get("profile_url") or prev.get("profile_url"),
                 "name": candidate.get("name") or prev.get("name"),
+                # A run must never strip the discovery snapshot: re-scoring
+                # a run-touched profile reads these fields, and blanking
+                # them silently drops it below threshold forever.
+                "headline": candidate.get("headline") or prev.get("headline"),
+                "location": candidate.get("location") or prev.get("location"),
+                "company": candidate.get("company") or prev.get("company"),
             }
             if outcome == UNKNOWN_CONTROLS:
                 # No ledger write: the profile stays queued for a later run,

@@ -1079,6 +1079,30 @@ class UnknownStorm(BotCase):
         self.assertIn("consecutive", err.getvalue())
 
 
+class SnapshotPreserved(BotCase):
+    def test_run_touch_never_strips_the_discovery_snapshot(self):
+        """Fresh candidate fields win, but fields the candidate omits fall
+        back to the stored snapshot instead of blanking it - otherwise a
+        run that only learns a status silently drops the profile below
+        threshold on every later pass."""
+        self.ledger["persons"] = {
+            "in:a": {"status": "queued", "last_ts": NOW,
+                     "profile_url": "https://www.linkedin.com/in/a/",
+                     "name": "a", "headline": "Tech Recruiter, GenAI", "location": "Remote"},
+        }
+        driver = FakeDriver([FOLLOW_ONLY])
+        summary = self.run_live(
+            [{"profile_url": "https://www.linkedin.com/in/a/", "name": "a",
+              "headline": "Hiring Manager, GenAI"}],
+            factory=lambda: driver,
+        )
+        stored = self.ledger["persons"]["in:a"]
+        self.assertEqual(stored["status"], FOLLOW_ONLY)
+        self.assertEqual(stored["headline"], "Hiring Manager, GenAI", "fresh input wins")
+        self.assertEqual(stored["location"], "Remote", "omitted fields fall back, never blank")
+        self.assertEqual(summary["skipped"], 1)
+
+
 class LedgerHandoff(BotCase):
     def test_run_from_ledger_invites_discover_queued_profiles(self):
         import io
