@@ -172,6 +172,20 @@ BUTTON_NAMES_JS = (
     "})"
 )
 
+# More-menu item read for the live More -> Connect path. LinkedIn renders
+# the overflow items as plain <li> under [role="menu"] (no menuitem role,
+# no inner button/anchor), so the selector must include the li clause:
+# without it the read sees only surrounding dialog chrome and a real
+# Connect is misreported as a follow-only profile. Diagnosed live on
+# 2026-11-02: a probe read with the li clause listed "Connect" while the
+# run path without it saw nothing usable.
+MORE_MENU_READ_JS = (
+    "Array.from(document.querySelectorAll("
+    "'[role=\"menu\"] [role=\"menuitem\"], [role=\"menu\"] button, '"
+    "'[role=\"menu\"] a, [role=\"dialog\"] button, [role=\"menu\"] li')).map("
+    "e => (e.getAttribute('aria-label') || e.innerText || ''))"
+)
+
 
 def _norm_low(raw: str) -> str:
     return normalize_button_name(raw).lower()
@@ -678,12 +692,7 @@ class PlaywrightDriver(InviteDriver):
             if stop is not None:
                 raise stop
             try:
-                menu_names = page.evaluate(
-                    "Array.from(document.querySelectorAll("
-                    "'[role=\"menu\"] [role=\"menuitem\"], [role=\"menu\"] button, "
-                    "[role=\"menu\"] a, [role=\"dialog\"] button')).map("
-                    "e => (e.getAttribute('aria-label') || e.innerText || ''))"
-                ) or []
+                menu_names = page.evaluate(MORE_MENU_READ_JS) or []
             except Exception:
                 self._escape(page)
                 continue

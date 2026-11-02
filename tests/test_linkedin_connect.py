@@ -27,6 +27,8 @@ from tools.linkedin_connect import (
     InviteDriver,
     InviteStop,
     LoginChallenge,
+    MORE_MENU_READ_JS,
+    PlaywrightDriver,
     RateLimited,
     UnexpectedUI,
     VerificationPrompt,
@@ -1077,6 +1079,100 @@ class MoreConnectEntry(unittest.TestCase):
         self.assertIsNone(pick_invite_entry([], "Arnab Banerjee"))
         self.assertIsNone(pick_invite_entry(["Invite Arnab Banerjee to connect"], ""))
         self.assertIsNone(pick_invite_entry(["Invite Arnab Banerjee to connect"], None))
+
+
+class MoreMenuLiRead(unittest.TestCase):
+    """Regression for the 2026-11-02 live miss: LinkedIn renders More-menu
+    items as plain <li> under [role="menu"] (no menuitem role, no inner
+    button/anchor), so a menu read without the li clause sees only
+    surrounding dialog chrome and a real Connect is misreported as a
+    follow-only profile. Observed live: a probe read with the li clause
+    listed a unique bare Connect, while the run path without it skipped."""
+
+    DIALOG_CHROME = ["Reset", "Done", "Close Modal Dialog"]
+    MENU_LI_ITEMS = ["Send profile in a message", "Save to PDF", "Connect",
+                     "Report Arnab", "Block Arnab", "About this member"]
+
+    class FakeClick:
+        def __init__(self, log, label):
+            self.log = log
+            self.label = label
+
+        def click(self, timeout=None):
+            self.log.append(self.label)
+
+    class FakeRole:
+        def __init__(self, log, label):
+            self.log = log
+            self.label = label
+
+        def nth(self, index):
+            return MoreMenuLiRead.FakeClick(self.log, f"{self.label}[{index}]")
+
+    class FakeText:
+        def __init__(self, log, text):
+            self.log = log
+            self.text = text
+
+        @property
+        def first(self):
+            return MoreMenuLiRead.FakeClick(self.log, self.text)
+
+    class FakeLocator:
+        def __init__(self, log):
+            self.log = log
+
+        def get_by_text(self, text, exact=False):
+            return MoreMenuLiRead.FakeText(self.log, text)
+
+    class FakeKeyboard:
+        def press(self, key):
+            pass
+
+    class FakePage:
+        """Emulates the observed DOM: menu items live in li elements, so
+        evaluate() surfaces them only when the selector queries li."""
+
+        def __init__(self):
+            self.read_selectors = []
+            self.clicked = []
+            self.keyboard = MoreMenuLiRead.FakeKeyboard()
+
+        def get_by_role(self, role):
+            return MoreMenuLiRead.FakeRole(self.clicked, role)
+
+        def wait_for_timeout(self, ms):
+            pass
+
+        def evaluate(self, script):
+            self.read_selectors.append(script)
+            items = list(MoreMenuLiRead.DIALOG_CHROME)
+            if '[role="menu"] li' in script:
+                items += MoreMenuLiRead.MENU_LI_ITEMS
+            return items
+
+        def locator(self, selector):
+            return MoreMenuLiRead.FakeLocator(self.clicked)
+
+    def test_li_menu_items_reach_the_entry_picker(self):
+        self.assertIn('[role="menu"] li', MORE_MENU_READ_JS,
+                      "the run-path menu read must query li items")
+        page = self.FakePage()
+        driver = PlaywrightDriver(Path("/tmp/lc-test-profile"))
+        driver._page_state = lambda page: None
+        driver._dialog_targets = lambda page, candidate: True
+        sent_notes = []
+        driver._send_bare_from_dialog = lambda page, note: (sent_notes.append(note), "sent")[1]
+        result = PlaywrightDriver._more_connect_flow(
+            driver, page, [0],
+            {"name": "Arnab Banerjee",
+             "profile_url": "https://www.linkedin.com/in/arnab-banerjee-86aa6186/"},
+            None,
+        )
+        self.assertEqual(result, "sent")
+        self.assertIn("Connect", page.clicked,
+                      f"the observed bare Connect must be clicked, clicked={page.clicked}")
+        self.assertEqual(sent_notes, [None], "bare invite carries no note")
 
 
 class NoteRequired(BotCase):

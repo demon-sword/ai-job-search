@@ -63,6 +63,16 @@ per-file diff commands.
 
 ### Fixed
 
+- **LinkedIn connect bot reads More-menu `li` items** - the live
+  More -> Connect path only queried `[role="menuitem"]`/button/anchor (plus
+  dialog buttons), but LinkedIn renders the overflow entries as plain `<li>`
+  under `[role="menu"]`, so the run path saw only dialog chrome and
+  misreported a profile with a real Connect as follow-only (observed live:
+  a probe read with the `li` clause listed a unique bare Connect while two
+  live passes skipped). The shared `MORE_MENU_READ_JS` selector now includes
+  the `li` clause, pinned by a `MoreMenuLiRead` regression test driving
+  `_more_connect_flow` against the observed menu shape.
+
 - **`jobindex-search detail` no longer fetches arbitrary URLs or invents posting-shaped
   output** (#447) - the command fetched any `http(s)` input verbatim (no host check) and,
   when the path didn't match its one pattern, silently used the whole input URL as the job
