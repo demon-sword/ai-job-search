@@ -35,13 +35,11 @@ from tools.linkedin_connect import (
     cache_key,
     canonical_key,
     check_note,
-    classify_entry_from_texts,
     classify_interstitial,
-    classify_invite_entry,
-    combine_entries,
     normalize_button_name,
     pick_invite_entry,
-    resolve_entry,
+    scan_entry_controls,
+    verify_dialog_target,
     cmd_discover,
     cmd_run,
     discovery_defaults,
@@ -927,17 +925,22 @@ class InviteEntry(BotCase):
         self.assertEqual(normalize_button_name(""), "")
         self.assertEqual(normalize_button_name(None), "")
 
-    def test_decision_table(self):
-        self.assertEqual(classify_invite_entry(["Connect", "Message", "More"]), "connect")
-        self.assertEqual(classify_invite_entry(["Connect", "Follow"]), "connect",
-                         "an exact Connect always wins; Follow co-presence changes nothing")
-        self.assertEqual(classify_invite_entry(["+ Follow", "Message", "More"]), "follow_only",
-                         "the observed creator-mode row, icon glyph included")
-        self.assertEqual(classify_invite_entry(["Message", "More"]), "unknown",
-                         "anything else stays fail-closed")
-        self.assertEqual(classify_invite_entry([]), "unknown")
-        self.assertEqual(classify_invite_entry(["Invite X to connect"]), "unknown",
-                         "a More-menu invite line never counts as a Connect control")
+    def test_scan_partitions_page_controls(self):
+        scan = scan_entry_controls(["Home", "Me", "More", "Follow Arnab Banerjee", "Message"])
+        self.assertEqual(scan["connect"], [])
+        self.assertTrue(scan["follow"], "named Follow variants count, icon glyphs included")
+        self.assertEqual(scan["more"], [2])
+
+    def test_scan_accepts_bare_and_named_connect(self):
+        scan = scan_entry_controls(["Connect", "Connect Arnab Banerjee", "Message"])
+        self.assertEqual(scan["connect"], [0, 1], "clicks are dialog-verified, so both qualify")
+
+    def test_scan_rejects_decoys_and_caps_indices(self):
+        scan = scan_entry_controls(["Connections", "Invite X to connect", "Open control menu",
+                                    "Connect", "Connect", "Connect", "Connect"])
+        self.assertEqual(scan["connect"], [3, 4, 5], "at most 3 click candidates, decoys excluded")
+        self.assertFalse(scan["follow"])
+        self.assertEqual(scan["more"], [])
 
     def test_follow_only_skips_with_reason_and_consumes_no_cap(self):
         summary = self.run_live([cand("f"), cand("s")], script=[FOLLOW_ONLY, "sent"])
@@ -958,73 +961,46 @@ class InviteEntry(BotCase):
         self.assertEqual(self.driver.calls, [])
 
 
-class DualSignalEntry(unittest.TestCase):
-    """Second-signal tests. The Follow-heavy fixture is transcribed from the
-    captured diag_invite button dump of a real Follow-primary profile (which
-    carries no Connect string at all); the Connect fixture mirrors a normal
-    top-card row. Both live in-test because the diag dir itself is gitignored
-    runtime state."""
+class CapturedPageScan(unittest.TestCase):
+    """Scan tests against the captured live button dump of a real
+    Follow-primary profile (transcribed in-test because the diag dir itself
+    is gitignored runtime state). The dump carries no Connect string at all,
+    four named Follow variants, and rail noise."""
 
-    CAPTURED_FOLLOW_ROW = [
+    CAPTURED_BUTTONS = [
         "Skip to search", "Skip to main content", "Skip to primary content",
-        "Skip to aside", "Skip to footer", "Home", "Me", "For Business",
-        "More", "Follow", "Follow", "More", "Follow", "… more", "Follow",
-        "… more", "1", "", "… more", "3", "… more", "2",
+        "Skip to aside", "Skip to footer", "Close jump menu",
+        "Home, 1 new notification", "Me", "For Business", "More",
+        "Follow Arnab Banerjee", "Follow Arnab Banerjee", "More",
+        "Follow Arnab Banerjee", "More", "… more", "Next",
+        "Follow Arnab Banerjee", "Open control menu for post by Arnab Banerjee",
     ]
 
-    def test_captured_follow_row_classifies_follow_only(self):
-        self.assertEqual(classify_entry_from_texts(self.CAPTURED_FOLLOW_ROW), "follow_only")
+    def test_captured_page_scans_follow_with_mores(self):
+        scan = scan_entry_controls(self.CAPTURED_BUTTONS)
+        self.assertEqual(scan["connect"], [], "no Connect string anywhere on the page")
+        self.assertTrue(scan["follow"])
+        self.assertEqual(scan["more"], [9, 12, 14])
 
-    def test_captured_follow_row_resolves_without_acc_signal(self):
-        self.assertEqual(resolve_entry("unknown", "follow_only"), "follow_only",
-                         "the exact live failure: empty acc read plus Follow text must skip, not stop")
-
-    def test_connect_row_classifies_connect(self):
-        self.assertEqual(classify_entry_from_texts(["More", "Message", "Connect"]), "connect")
-
-    def test_text_alone_never_drives_a_click(self):
-        self.assertEqual(resolve_entry("unknown", "connect"), "unknown",
-                         "no acc-verified control means no click target")
-
-    def test_conflicts_and_silence_stay_fail_closed(self):
-        for acc, text in [("connect", "follow_only"), ("follow_only", "connect"),
-                          ("unknown", None), ("unknown", "unknown")]:
-            with self.subTest(acc=acc, text=text):
-                self.assertEqual(resolve_entry(acc, text), "unknown")
-
-    def test_agreement_passes_through(self):
-        self.assertEqual(resolve_entry("connect", "connect"), "connect")
-        self.assertEqual(resolve_entry("follow_only", "follow_only"), "follow_only")
-        self.assertEqual(resolve_entry("connect", None), "connect")
-        self.assertEqual(resolve_entry("follow_only", None), "follow_only")
+    def test_captured_page_never_resolves_to_a_click(self):
+        scan = scan_entry_controls(self.CAPTURED_BUTTONS)
+        self.assertEqual(scan["connect"], [])
 
 
-class CombineEntries(unittest.TestCase):
-    def test_card_scope_drives_clicks(self):
-        self.assertEqual(combine_entries("connect", "unknown"), "connect")
-        self.assertEqual(combine_entries("connect", "follow_only"), "connect")
-        self.assertEqual(combine_entries("follow_only", "unknown"), "follow_only")
+class VerifyDialogTarget(unittest.TestCase):
+    def test_full_name_match_verifies(self):
+        self.assertTrue(verify_dialog_target("Send invitation to Arnab Banerjee", "Arnab Banerjee"))
 
-    def test_wide_scope_only_downgrades_to_safe_skip(self):
-        self.assertEqual(combine_entries("unknown", "follow_only"), "follow_only")
+    def test_match_ignores_case_and_spacing(self):
+        self.assertTrue(verify_dialog_target("  invite   ARNAB banerjee  ", "arnab  Banerjee"))
 
-    def test_wide_connect_never_counts(self):
-        self.assertEqual(combine_entries("unknown", "connect"), "unknown",
-                         "it could belong to a suggested profile - fail closed")
+    def test_wrong_person_fails(self):
+        self.assertFalse(verify_dialog_target("Send invitation to Mohan Kumar", "Arnab Banerjee"))
 
-    def test_double_silence_stays_fail_closed(self):
-        self.assertEqual(combine_entries("unknown", "unknown"), "unknown")
-
-    def test_incident_replay_empty_card_plus_follow_page(self):
-        """The 4-skips-in-a-row incident: the anchored read came back empty
-        while the page provably carried Follow text (captured fixture).
-        That combination must skip, never stop."""
-        wide = resolve_entry(
-            classify_invite_entry([]),
-            classify_entry_from_texts(DualSignalEntry.CAPTURED_FOLLOW_ROW),
-        )
-        self.assertEqual(wide, "follow_only")
-        self.assertEqual(combine_entries("unknown", wide), "follow_only")
+    def test_empty_dialog_or_name_fails(self):
+        self.assertFalse(verify_dialog_target("", "Arnab Banerjee"))
+        self.assertFalse(verify_dialog_target("Send invitation", ""))
+        self.assertFalse(verify_dialog_target("Send invitation", None))
 
 
 class MoreConnectEntry(unittest.TestCase):

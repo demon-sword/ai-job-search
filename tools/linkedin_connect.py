@@ -150,75 +150,43 @@ def normalize_button_name(raw: str) -> str:
     return re.sub(r"^[^A-Za-z0-9]+", "", text)
 
 
-def classify_invite_entry(names) -> str:
-    """Classify a profile's top-card action row from normalized control
-    names. Callers pass the card-scoped set (see PlaywrightDriver: anchored
-    on the card's Contact-info link, never page-wide, so a suggested
-    profile's Connect can never be mistaken for this profile's).
-
-    'connect' means a Connect control exists and the dialog flow may
-    proceed. 'follow_only' means a Follow control exists but no Connect -
-    a creator-mode profile that can never receive an invite; it is skipped
-    with a reason, never force-clicked. Anything else is 'unknown' and stays
-    a fail-closed UnexpectedUI. Message may co-occur with Follow on open
-    2nd-degree profiles, so it never implies anything here.
-    """
-    normalized = {normalize_button_name(name) for name in names or []}
-    normalized.discard("")
-    if "Connect" in normalized:
-        return "connect"
-    if "Follow" in normalized:
-        return "follow_only"
-    return "unknown"
+def verify_dialog_target(dialog_text: str, candidate_name: str) -> bool:
+    """True when an opened invite dialog addresses the candidate by full
+    name. Every programmatic Connect click must pass this before Send:
+    it is what makes page-wide control matching safe against inviting a
+    stranger from a suggested-profile card."""
+    want = re.sub(r"\s+", " ", str(candidate_name or "")).strip().lower()
+    if not want:
+        return False
+    have = re.sub(r"\s+", " ", str(dialog_text or "")).strip().lower()
+    return want in have
 
 
-def classify_entry_from_texts(lines) -> str | None:
-    """Second opinion from the card's visible text lines: an exact "Connect"
-    line means connect, an exact "Follow" line with no Connect line means
-    follow_only, anything else is None (no opinion). Used against the
-    accessible-name signal by resolve_entry; never drives a click alone."""
-    texts = [normalize_button_name(line) for line in lines or []]
-    if "Connect" in texts:
-        return "connect"
-    if "Follow" in texts:
-        return "follow_only"
-    return None
+def _norm_low(raw: str) -> str:
+    return normalize_button_name(raw).lower()
 
 
-def resolve_entry(acc_entry: str, text_entry: str | None) -> str:
-    """Combine the accessible-name signal with the visible-text signal.
-
-    Clicks require an acc-verified control, so text alone never yields
-    connect. Skips are safe, so a lone follow_only signal suffices. Genuine
-    conflicts and double silence stay fail-closed unknown.
-    """
-    if acc_entry == "connect" and text_entry in ("connect", None):
-        return "connect"
-    if acc_entry == "follow_only" and text_entry in ("follow_only", None):
-        return "follow_only"
-    if acc_entry == "unknown" and text_entry == "follow_only":
-        return "follow_only"
-    return "unknown"
-
-
-ACCNAMES_JS = (
-    "els => els.map(e => e.getAttribute('aria-label') || e.innerText || '')"
-)
-
-
-def combine_entries(card_entry: str, wide_entry: str) -> str:
-    """Merge the card-scoped verdict with the main-scope fallback. The card
-    scope drives clicks, so only it can yield connect; the wide scope only
-    ever downgrades an unreadable card to a safe follow_only skip. A wide
-    connect never counts - it could belong to a suggested profile - and
-    anything else stays fail-closed unknown."""
-    if card_entry == "connect":
-        return "connect"
-    if card_entry == "follow_only":
-        return "follow_only"
-    if wide_entry == "follow_only":
-        return "follow_only"
-    return "unknown"
+def scan_entry_controls(names) -> dict:
+    """Partition page-wide button accessible names (document order) into
+    Connect-candidate indices, a follow flag, and More indices. Matching is
+    deliberately loose here - "Connect Arnab Banerjee", bare "Connect",
+    "+ Follow" all qualify - because every click is verified against the
+    opened dialog's addressee before Send. "Connections" and "Invite X to
+    connect" never match: the first is not an action, the second is a menu
+    line handled by pick_invite_entry."""
+    connect, more = [], []
+    follow = False
+    for index, raw in enumerate(names or []):
+        name = _norm_low(raw)
+        if name == "connect" or name.startswith("connect "):
+            if len(connect) < 3:
+                connect.append(index)
+        elif name == "follow" or name.startswith("follow "):
+            follow = True
+        elif name == "more":
+            if len(more) < 3:
+                more.append(index)
+    return {"connect": connect, "follow": follow, "more": more}
 
 
 FOLLOW_ONLY = "follow_only"
@@ -589,67 +557,47 @@ class PlaywrightDriver(InviteDriver):
                     return "already_connected"
             except Exception as exc:
                 raise UnexpectedUI(f"could not read message button: {exc}") from exc
-            # Card-scoped, normalized-name matching. The card is anchored on
-            # its Contact-info link (a UI staple), so a suggested profile's
-            # Connect elsewhere on the page can never be mistaken for this
-            # profile's - clicking that would invite a stranger. Names come
-            # from aria-labels with innerText fallback, then normalized
-            # ("+ Follow" -> "Follow"); "Invite X to connect" never
-            # collapses onto "Connect". A Connect hidden under More is
-            # deliberately NOT pursued: its menu item cannot be identified
-            # without guessing, and guessing is what broke this.
-            anchor = page.get_by_text("Contact info", exact=True).first
+            # No scope guessing: read every button's accessible name page-wide
+            # (aria-label with innerText fallback), partition them, and
+            # verify every click against the opened dialog's addressee. A
+            # suggested profile's Connect can therefore never invite a
+            # stranger - the dialog will name someone else and the click is
+            # escaped. Settle first so hydration, not absence, is observed.
             try:
-                anchor.wait_for(state="attached", timeout=15000)
-                page.wait_for_timeout(2000)
-                has_anchor = anchor.count() > 0
-            except Exception as exc:
-                raise UnexpectedUI(f"top-card anchor never rendered: {exc}") from exc
-            if not has_anchor:
-                raise UnexpectedUI("profile top card has no Contact-info anchor")
-            try:
-                card = anchor.locator("xpath=./ancestor-or-self::*[.//button][1]")
-                raw_names = card.get_by_role("button").evaluate_all(ACCNAMES_JS)
-                try:
-                    card_text = card.evaluate("(el) => el.innerText || ''")
-                except Exception:
-                    card_text = ""
-            except Exception as exc:
-                raise UnexpectedUI(f"could not read top-card actions: {exc}") from exc
-            acc_entry = classify_invite_entry(raw_names or [])
-            text_entry = classify_entry_from_texts((card_text or "").splitlines())
-            card_verdict = resolve_entry(acc_entry, text_entry)
-            # Main-scope fallback, detection only: if the anchored read came
-            # back empty, the wide read can still downgrade to a safe skip.
-            # It can never yield connect - clicks stay card-scoped.
-            try:
-                main = page.locator("main")
-                wide_names = main.get_by_role("button").evaluate_all(ACCNAMES_JS)
-                try:
-                    wide_text = main.evaluate("(el) => el.innerText || ''")
-                except Exception:
-                    wide_text = ""
-            except Exception:
-                wide_names, wide_text = [], ""
-            wide_verdict = resolve_entry(
-                classify_invite_entry(wide_names or []),
-                classify_entry_from_texts((wide_text or "").splitlines()),
-            )
-            entry = combine_entries(card_verdict, wide_verdict)
-            if entry == "follow_only":
-                # Creator-mode profiles accept invites via More -> Connect.
-                return self._more_connect_flow(page, card, candidate, note)
-            if entry == "unknown":
-                return UNKNOWN_CONTROLS
-            connect = card.get_by_role("button", name=re.compile(r"^\W*Connect\s*$", re.I)).first
-            try:
-                connect.click(timeout=10000)
+                page.wait_for_function(
+                    "() => document.querySelectorAll('main button').length >= 3",
+                    timeout=20000,
+                )
                 page.wait_for_timeout(1500)
-            except InviteStop:
-                raise
+                acc_names = page.evaluate(
+                    "Array.from(document.querySelectorAll('button')).map("
+                    "e => (e.getAttribute('aria-label') || e.innerText || ''))"
+                ) or []
             except Exception as exc:
-                raise UnexpectedUI(f"Connect control did not behave: {exc}") from exc
-            return self._send_bare_from_dialog(page, note)
+                raise UnexpectedUI(f"profile actions never rendered: {exc}") from exc
+            scan = scan_entry_controls(acc_names)
+            for index in scan["connect"]:
+                try:
+                    page.get_by_role("button").nth(index).click(timeout=10000)
+                    page.wait_for_timeout(1500)
+                except InviteStop:
+                    raise
+                except Exception:
+                    continue
+                stop = self._page_state(page)
+                if stop is not None:
+                    raise stop
+                if self._dialog_targets(page, candidate):
+                    return self._send_bare_from_dialog(page, note)
+                self._escape(page)
+            # No verified Connect: a follow-only profile may still invite
+            # via More -> Connect; anything else is an unknown-controls skip.
+            more_result = self._more_connect_flow(page, scan["more"], candidate, note)
+            if more_result is not None:
+                return more_result
+            if scan["follow"]:
+                return FOLLOW_ONLY
+            return UNKNOWN_CONTROLS
         finally:
             try:
                 page.close()
@@ -666,47 +614,73 @@ class PlaywrightDriver(InviteDriver):
                 pass
         self._ctx, self._pw = None, None
 
-    def _more_connect_flow(self, page, card, candidate: dict, note: str | None) -> str:
-        """Follow-only entry: open More, choose the verified Connect item,
-        send bare. Returns "sent", FOLLOW_ONLY (no usable entry), or
-        NOTE_REQUIRED (dialog forces a note - never written). Mechanical
-        failures map to UNKNOWN_CONTROLS so the storm guard watches them;
-        the challenge family still raises."""
+    def _escape(self, page) -> None:
         try:
-            more = card.get_by_role("button", name=re.compile(r"^\W*More\s*$", re.I)).first
-            if more.count() == 0:
-                return FOLLOW_ONLY
-            more.click(timeout=10000)
-            page.wait_for_timeout(1500)
-        except InviteStop:
-            raise
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(500)
         except Exception:
-            return UNKNOWN_CONTROLS
-        stop = self._page_state(page)
-        if stop is not None:
-            raise stop
+            pass
+
+    def _dialog_targets(self, page, candidate: dict) -> bool:
+        """True when an open dialog addresses the candidate by name."""
         try:
-            menu_names = page.evaluate(
-                """() => Array.from(document.querySelectorAll(
-                    '[role="menu"] [role="menuitem"], [role="menu"] button, '
-                    '[role="menu"] a, [role="dialog"] button'
-                )).map(e => (e.getAttribute('aria-label') || e.innerText || '').trim())"""
-            )
+            dialog = page.get_by_role("dialog").first
+            if dialog.count() == 0:
+                return False
+            text = dialog.inner_text(timeout=5000)
         except Exception:
-            return UNKNOWN_CONTROLS
-        entry_name = pick_invite_entry(menu_names or [], candidate.get("name") or "")
-        if entry_name is None:
-            return FOLLOW_ONLY
-        try:
-            page.locator(
-                'button, a, [role="button"], [role="menuitem"], [role="menuitemcheckbox"], li'
-            ).get_by_text(entry_name, exact=True).first.click(timeout=10000)
-            page.wait_for_timeout(1500)
-        except InviteStop:
-            raise
-        except Exception:
-            return UNKNOWN_CONTROLS
-        return self._send_bare_from_dialog(page, note)
+            return False
+        return verify_dialog_target(text, candidate.get("name") or "")
+
+    def _more_connect_flow(self, page, more_indices: list, candidate: dict, note: str | None):
+        """Follow-entry invite path over up to three More buttons: open each,
+        choose only a name-verified Connect item, verify the dialog target,
+        send bare. Returns an outcome, or None when no More path was usable
+        (caller maps that to FOLLOW_ONLY or UNKNOWN_CONTROLS). Mechanical
+        failures move to the next More; the challenge family still raises."""
+        for index in more_indices:
+            try:
+                page.get_by_role("button").nth(index).click(timeout=10000)
+                page.wait_for_timeout(1500)
+            except InviteStop:
+                raise
+            except Exception:
+                continue
+            stop = self._page_state(page)
+            if stop is not None:
+                raise stop
+            try:
+                menu_names = page.evaluate(
+                    "Array.from(document.querySelectorAll("
+                    "'[role=\"menu\"] [role=\"menuitem\"], [role=\"menu\"] button, "
+                    "[role=\"menu\"] a, [role=\"dialog\"] button')).map("
+                    "e => (e.getAttribute('aria-label') || e.innerText || ''))"
+                ) or []
+            except Exception:
+                self._escape(page)
+                continue
+            entry_name = pick_invite_entry(menu_names, candidate.get("name") or "")
+            if entry_name is None:
+                self._escape(page)
+                continue
+            try:
+                page.locator(
+                    'button, a, [role="button"], [role="menuitem"], '
+                    '[role="menuitemcheckbox"], li'
+                ).get_by_text(entry_name, exact=True).first.click(timeout=10000)
+                page.wait_for_timeout(1500)
+            except InviteStop:
+                raise
+            except Exception:
+                self._escape(page)
+                continue
+            stop = self._page_state(page)
+            if stop is not None:
+                raise stop
+            if self._dialog_targets(page, candidate):
+                return self._send_bare_from_dialog(page, note)
+            self._escape(page)
+        return None
 
     def _send_bare_from_dialog(self, page, note: str | None) -> str:
         """Complete an opened invite dialog with a bare Send. A dialog that
