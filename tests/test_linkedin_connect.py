@@ -38,6 +38,7 @@ from tools.linkedin_connect import (
     classify_entry_from_texts,
     classify_interstitial,
     classify_invite_entry,
+    combine_entries,
     normalize_button_name,
     pick_invite_entry,
     resolve_entry,
@@ -996,6 +997,34 @@ class DualSignalEntry(unittest.TestCase):
         self.assertEqual(resolve_entry("follow_only", "follow_only"), "follow_only")
         self.assertEqual(resolve_entry("connect", None), "connect")
         self.assertEqual(resolve_entry("follow_only", None), "follow_only")
+
+
+class CombineEntries(unittest.TestCase):
+    def test_card_scope_drives_clicks(self):
+        self.assertEqual(combine_entries("connect", "unknown"), "connect")
+        self.assertEqual(combine_entries("connect", "follow_only"), "connect")
+        self.assertEqual(combine_entries("follow_only", "unknown"), "follow_only")
+
+    def test_wide_scope_only_downgrades_to_safe_skip(self):
+        self.assertEqual(combine_entries("unknown", "follow_only"), "follow_only")
+
+    def test_wide_connect_never_counts(self):
+        self.assertEqual(combine_entries("unknown", "connect"), "unknown",
+                         "it could belong to a suggested profile - fail closed")
+
+    def test_double_silence_stays_fail_closed(self):
+        self.assertEqual(combine_entries("unknown", "unknown"), "unknown")
+
+    def test_incident_replay_empty_card_plus_follow_page(self):
+        """The 4-skips-in-a-row incident: the anchored read came back empty
+        while the page provably carried Follow text (captured fixture).
+        That combination must skip, never stop."""
+        wide = resolve_entry(
+            classify_invite_entry([]),
+            classify_entry_from_texts(DualSignalEntry.CAPTURED_FOLLOW_ROW),
+        )
+        self.assertEqual(wide, "follow_only")
+        self.assertEqual(combine_entries("unknown", wide), "follow_only")
 
 
 class MoreConnectEntry(unittest.TestCase):

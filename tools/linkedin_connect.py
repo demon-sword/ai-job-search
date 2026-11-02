@@ -201,6 +201,26 @@ def resolve_entry(acc_entry: str, text_entry: str | None) -> str:
     return "unknown"
 
 
+ACCNAMES_JS = (
+    "els => els.map(e => e.getAttribute('aria-label') || e.innerText || '')"
+)
+
+
+def combine_entries(card_entry: str, wide_entry: str) -> str:
+    """Merge the card-scoped verdict with the main-scope fallback. The card
+    scope drives clicks, so only it can yield connect; the wide scope only
+    ever downgrades an unreadable card to a safe follow_only skip. A wide
+    connect never counts - it could belong to a suggested profile - and
+    anything else stays fail-closed unknown."""
+    if card_entry == "connect":
+        return "connect"
+    if card_entry == "follow_only":
+        return "follow_only"
+    if wide_entry == "follow_only":
+        return "follow_only"
+    return "unknown"
+
+
 FOLLOW_ONLY = "follow_only"
 NOTE_REQUIRED = "note_required"
 UNKNOWN_CONTROLS = "unknown_controls"
@@ -580,16 +600,16 @@ class PlaywrightDriver(InviteDriver):
             # without guessing, and guessing is what broke this.
             anchor = page.get_by_text("Contact info", exact=True).first
             try:
+                anchor.wait_for(state="attached", timeout=15000)
+                page.wait_for_timeout(2000)
                 has_anchor = anchor.count() > 0
             except Exception as exc:
-                raise UnexpectedUI(f"could not read top-card actions: {exc}") from exc
+                raise UnexpectedUI(f"top-card anchor never rendered: {exc}") from exc
             if not has_anchor:
                 raise UnexpectedUI("profile top card has no Contact-info anchor")
             try:
                 card = anchor.locator("xpath=./ancestor-or-self::*[.//button][1]")
-                raw_names = card.get_by_role("button").evaluate_all(
-                    "els => els.map(e => e.getAttribute('aria-label') || e.innerText || '')"
-                )
+                raw_names = card.get_by_role("button").evaluate_all(ACCNAMES_JS)
                 try:
                     card_text = card.evaluate("(el) => el.innerText || ''")
                 except Exception:
@@ -598,7 +618,24 @@ class PlaywrightDriver(InviteDriver):
                 raise UnexpectedUI(f"could not read top-card actions: {exc}") from exc
             acc_entry = classify_invite_entry(raw_names or [])
             text_entry = classify_entry_from_texts((card_text or "").splitlines())
-            entry = resolve_entry(acc_entry, text_entry)
+            card_verdict = resolve_entry(acc_entry, text_entry)
+            # Main-scope fallback, detection only: if the anchored read came
+            # back empty, the wide read can still downgrade to a safe skip.
+            # It can never yield connect - clicks stay card-scoped.
+            try:
+                main = page.locator("main")
+                wide_names = main.get_by_role("button").evaluate_all(ACCNAMES_JS)
+                try:
+                    wide_text = main.evaluate("(el) => el.innerText || ''")
+                except Exception:
+                    wide_text = ""
+            except Exception:
+                wide_names, wide_text = [], ""
+            wide_verdict = resolve_entry(
+                classify_invite_entry(wide_names or []),
+                classify_entry_from_texts((wide_text or "").splitlines()),
+            )
+            entry = combine_entries(card_verdict, wide_verdict)
             if entry == "follow_only":
                 # Creator-mode profiles accept invites via More -> Connect.
                 return self._more_connect_flow(page, card, candidate, note)
