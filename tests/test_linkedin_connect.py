@@ -974,6 +974,12 @@ class InviteEntry(BotCase):
         self.assertFalse(scan["follow"])
         self.assertEqual(scan["more"], [])
 
+    def test_titled_more_counts_as_more(self):
+        scan = scan_entry_controls(["More options", "Message"])
+        self.assertEqual(scan["more"], [0], "title-attribute names must resolve, not vanish")
+        self.assertEqual(scan["connect"], [])
+        self.assertFalse(scan["follow"])
+
     def test_follow_only_skips_with_reason_and_consumes_no_cap(self):
         summary = self.run_live([cand("f"), cand("s")], script=[FOLLOW_ONLY, "sent"])
         self.assertEqual(summary["sent"], 1)

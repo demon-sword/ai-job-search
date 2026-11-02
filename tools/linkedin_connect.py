@@ -162,6 +162,17 @@ def verify_dialog_target(dialog_text: str, candidate_name: str) -> bool:
     return want in have
 
 
+BUTTON_NAMES_JS = (
+    "Array.from(document.querySelectorAll('button')).map(e => {"
+    " const by = e.getAttribute('aria-labelledby');"
+    " if (by) { const t = by.split(' ').map(id => "
+    "((document.getElementById(id) || {}).innerText || '')).join(' ').trim();"
+    " if (t) return t; }"
+    " return (e.getAttribute('aria-label') || e.getAttribute('title') || e.innerText || '');"
+    "})"
+)
+
+
 def _norm_low(raw: str) -> str:
     return normalize_button_name(raw).lower()
 
@@ -183,7 +194,9 @@ def scan_entry_controls(names) -> dict:
                 connect.append(index)
         elif name == "follow" or name.startswith("follow "):
             follow = True
-        elif name == "more":
+        elif name == "more" or name.startswith("more "):
+            # "More options" and friends count: opening one only reads its
+            # menu, and a menu without the named entry is escaped untouched.
             if len(more) < 3:
                 more.append(index)
     return {"connect": connect, "follow": follow, "more": more}
@@ -573,23 +586,23 @@ class PlaywrightDriver(InviteDriver):
             except Exception as exc:
                 raise UnexpectedUI(f"could not read message button: {exc}") from exc
             # No scope guessing: read every button's accessible name page-wide
-            # (aria-label with innerText fallback), partition them, and
+            # (labelledby/label/title/text resolution), partition them, and
             # verify every click against the opened dialog's addressee. A
             # suggested profile's Connect can therefore never invite a
             # stranger - the dialog will name someone else and the click is
-            # escaped. Settle first so hydration, not absence, is observed.
+            # escaped. Settle on the candidate's own name rendering, so a
+            # half-hydrated shell can never read as an empty profile.
             try:
                 page.wait_for_function(
-                    "() => document.querySelectorAll('main button').length >= 3",
+                    "(name) => (document.body ? document.body.innerText : '')"
+                    ".includes(name || 'Contact info')",
+                    arg=candidate.get("name") or "",
                     timeout=20000,
                 )
                 page.wait_for_timeout(1500)
-                acc_names = page.evaluate(
-                    "Array.from(document.querySelectorAll('button')).map("
-                    "e => (e.getAttribute('aria-label') || e.innerText || ''))"
-                ) or []
+                acc_names = page.evaluate(BUTTON_NAMES_JS) or []
             except Exception as exc:
-                raise UnexpectedUI(f"profile actions never rendered: {exc}") from exc
+                raise UnexpectedUI(f"profile content never rendered: {exc}") from exc
             scan = scan_entry_controls(acc_names)
             for index in scan["connect"]:
                 try:
