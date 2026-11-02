@@ -1049,6 +1049,21 @@ class MoreConnectEntry(unittest.TestCase):
         self.assertIsNone(pick_invite_entry(["Connect", "Message"], "Arnab Banerjee"),
                           "a bare Connect could belong to a suggested profile - never click it")
 
+    def test_menu_bare_connect_accepted_when_unique(self):
+        menu = ["Send profile in a message", "Save to PDF", "Connect",
+                "Report Arnab", "Block Arnab", "About this member"]
+        self.assertEqual(pick_invite_entry(menu, "Arnab Banerjee", bare_ok=True), "Connect")
+
+    def test_menu_bare_connect_rejected_when_ambiguous(self):
+        menu = ["Connect", "Connect", "Save to PDF"]
+        self.assertIsNone(pick_invite_entry(menu, "Arnab Banerjee", bare_ok=True),
+                          "two bare Connects in one menu must fail closed")
+
+    def test_named_entry_still_wins_over_bare(self):
+        menu = ["Connect", "Invite Arnab Banerjee to connect"]
+        self.assertEqual(pick_invite_entry(menu, "Arnab Banerjee", bare_ok=True),
+                         "Invite Arnab Banerjee to connect")
+
     def test_other_persons_entry_is_rejected(self):
         self.assertIsNone(pick_invite_entry(["Invite Mohan Kumar to connect"], "Arnab Banerjee"))
 

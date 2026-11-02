@@ -202,17 +202,29 @@ MAX_CONSECUTIVE_UNKNOWN = 3
 _INVITE_ENTRY_RE = re.compile(r"^Invite (.+) to connect$", re.IGNORECASE)
 
 
-def pick_invite_entry(names, candidate_name: str) -> str | None:
-    """Choose the exact More-menu string to click, or None. Only a full
-    "Invite <candidate name> to connect" match (case-insensitive) is
-    clickable: a bare "Connect" anywhere could belong to a suggested
-    profile, and clicking that invites a stranger. Returns the observed
-    string verbatim for an exact-text click - never a reconstruction."""
+def pick_invite_entry(names, candidate_name: str, bare_ok: bool = False) -> str | None:
+    """Choose the exact More-menu string to click, or None. A full
+    "Invite <candidate name> to connect" match (case-insensitive) always
+    wins. With bare_ok (menu context only: the open menu belongs to the
+    More just clicked, and the dialog target is verified afterwards), a
+    unique bare "Connect" is clickable too - diagnosed live as LinkedIn's
+    actual overflow wording. The default stays strict: a bare "Connect"
+    anywhere else could belong to a suggested profile, and clicking that
+    invites a stranger. Returns the observed string verbatim for an
+    exact-text click - never a reconstruction."""
     want = (candidate_name or "").strip().lower()
+    bare = None
+    bare_count = 0
     for raw in names or []:
-        match = _INVITE_ENTRY_RE.match(str(raw or "").strip())
+        text = str(raw or "").strip()
+        match = _INVITE_ENTRY_RE.match(text)
         if match and match.group(1).strip().lower() == want and want:
-            return str(raw).strip()
+            return text
+        if bare_ok and normalize_button_name(text).lower() == "connect":
+            bare_count += 1
+            bare = text
+    if bare_ok and bare_count == 1:
+        return bare
     return None
 
 
@@ -662,7 +674,7 @@ class PlaywrightDriver(InviteDriver):
             except Exception:
                 self._escape(page)
                 continue
-            entry_name = pick_invite_entry(menu_names, candidate.get("name") or "")
+            entry_name = pick_invite_entry(menu_names, candidate.get("name") or "", bare_ok=True)
             if entry_name is None:
                 self._escape(page)
                 continue
