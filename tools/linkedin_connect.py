@@ -894,6 +894,106 @@ class PlaywrightDriver(InviteDriver):
         except Exception:
             pass
 
+    def _menu_entry_locator(self, page, entry_name: str):
+        """The entry inside the open dropdown only - never a page-wide
+        text match, which could resolve to another card's control."""
+        return page.locator(
+            '[role="menu"], .artdeco-dropdown__content'
+        ).get_by_text(entry_name, exact=True).first
+
+    def _menu_entry_box(self, page, entry_name: str):
+        """Viewport box of the dropdown entry, or None when it cannot be
+        resolved to exactly one visible target."""
+        try:
+            return self._menu_entry_locator(page, entry_name).bounding_box(timeout=5000)
+        except Exception:
+            return None
+
+    def _human_press_entry(self, page, entry_name: str, candidate: dict, note: str | None,
+                           slug: str, tag: str):
+        """Press a verified menu entry the human way: re-verify the menu is
+        still open with the entry, move the mouse to the item, hover-settle
+        with a screenshot, re-verify again, then click at the item's coords.
+        Trusted pointer events throughout - no JS event synthesis. Returns
+        the send outcome, or None when any assert fails (caller escapes and
+        moves on). The challenge family still raises."""
+        name = candidate.get("name") or ""
+        if pick_invite_entry(self._read_menu(page), name, bare_ok=True) != entry_name:
+            self._capture(page, slug, f"{tag}_premove", ok=False)
+            return None
+        box = self._menu_entry_box(page, entry_name)
+        if not box:
+            self._capture(page, slug, f"{tag}_nobox", ok=False)
+            return None
+        x = box["x"] + box["width"] / 2
+        y = box["y"] + box["height"] / 2
+        try:
+            page.mouse.move(x, y)
+            page.wait_for_timeout(800)
+        except InviteStop:
+            raise
+        except Exception:
+            self._capture(page, slug, f"{tag}_move", ok=False)
+            return None
+        self._capture(page, slug, f"{tag}_hover", ok=True)
+        if pick_invite_entry(self._read_menu(page), name, bare_ok=True) != entry_name:
+            self._capture(page, slug, f"{tag}_preclick", ok=False)
+            return None
+        try:
+            page.mouse.click(x, y)
+            page.wait_for_timeout(1500)
+        except InviteStop:
+            raise
+        except Exception:
+            self._capture(page, slug, f"{tag}_click", ok=False)
+            return None
+        stop = self._page_state(page)
+        if stop is not None:
+            raise stop
+        if self._dialog_targets(page, candidate):
+            self._capture(page, slug, f"{tag}_dialog", ok=True)
+            outcome = self._send_bare_from_dialog(page, note)
+            if outcome == "sent":
+                self._capture(page, slug, f"{tag}_sent", ok=True)
+            return outcome
+        self._capture(page, slug, f"{tag}_dialog", ok=False)
+        self._escape(page)
+        return None
+
+    def _keyboard_press_entry(self, page, index: int, entry_name: str, candidate: dict,
+                              note: str | None, slug: str, tag: str):
+        """The one allowed fallback: re-open the More, keyboard-focus the
+        entry, press Enter. Same asserts and captures as the pointer path."""
+        if not self._expand_more(page, index):
+            return None
+        if pick_invite_entry(self._read_menu(page), candidate.get("name") or "",
+                             bare_ok=True) != entry_name:
+            self._capture(page, slug, f"{tag}_remenu", ok=False)
+            self._escape(page)
+            return None
+        try:
+            target = self._menu_entry_locator(page, entry_name)
+            target.focus(timeout=10000)
+            page.keyboard.press("Enter")
+            page.wait_for_timeout(1500)
+        except InviteStop:
+            raise
+        except Exception:
+            self._capture(page, slug, f"{tag}_keys", ok=False)
+            return None
+        stop = self._page_state(page)
+        if stop is not None:
+            raise stop
+        if self._dialog_targets(page, candidate):
+            self._capture(page, slug, f"{tag}_dialog", ok=True)
+            outcome = self._send_bare_from_dialog(page, note)
+            if outcome == "sent":
+                self._capture(page, slug, f"{tag}_sent", ok=True)
+            return outcome
+        self._capture(page, slug, f"{tag}_dialog", ok=False)
+        self._escape(page)
+        return None
+
     def _press_connect_and_send(self, page, press, candidate: dict, note: str | None,
                                 slug: str, tag: str):
         """One self-verifying Connect transition: press the control, assert
@@ -1001,14 +1101,14 @@ class PlaywrightDriver(InviteDriver):
             self._capture(page, slug, f"more{pos}_menu", ok=True,
                           read={"menu_names": menu_names})
             clicked_any = True
-            outcome = self._press_connect_and_send(
-                page,
-                lambda e=entry_name: page.locator(
-                    'button, a, [role="button"], [role="menuitem"], '
-                    '[role="menuitemcheckbox"], li, [role="menu"] div, '
-                    '.artdeco-dropdown__content div'
-                ).get_by_text(e, exact=True).first.click(timeout=10000),
-                candidate, note, slug, f"more{pos}",
+            outcome = self._human_press_entry(
+                page, entry_name, candidate, note, slug, f"more{pos}",
+            )
+            if outcome is not None:
+                return outcome
+            # The one allowed fallback: keyboard sequencing on the same More.
+            outcome = self._keyboard_press_entry(
+                page, index, entry_name, candidate, note, slug, f"more{pos}kb",
             )
             if outcome is not None:
                 return outcome
