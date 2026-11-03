@@ -113,6 +113,7 @@ company_research/*.json
 .agents/**/node_modules/
 .agents/**/*.log
 .agents/usage/
+.agents/skills/job-check/.cache/
 
 # Brainstorm mockups (superpowers visual companion) - never ship
 .superpowers/
