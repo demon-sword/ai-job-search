@@ -27,6 +27,7 @@ from tools.linkedin_connect import (
     HARD_WEEKLY_CAP,
     MAX_CONSECUTIVE_UNKNOWN,
     NOTE_REQUIRED,
+    OVERLAY_BLOCKED,
     RUN_SKIP_STATUSES,
     TERMINAL_STATUSES,
     UNKNOWN_CONTROLS,
@@ -1477,6 +1478,147 @@ class StepVerify(unittest.TestCase):
         self.assertEqual(PlaywrightDriver._slug(self.CAND), "in-arnab-banerjee-86aa6186")
         self.assertEqual(PlaywrightDriver._slug({"profile_url": "   "}), "unkeyable")
         self.assertEqual(PlaywrightDriver._slug({}), "unkeyable")
+
+
+class OverlayDismiss(unittest.TestCase):
+    """Promo/interstitial scrims swallow entry clicks while reads see only
+    the overlay's own buttons (observed live: full-page scrim, menu reads of
+    pure dialog chrome, four Escapes ineffective). The driver dismisses via
+    Escape then one close/decline control - with before/after captures - and
+    blocks (OVERLAY_BLOCKED) when no clean dismiss exists or the overlay
+    persists. Never an accept click."""
+
+    CAND = {"name": "Arnab Banerjee",
+            "profile_url": "https://www.linkedin.com/in/arnab-banerjee-86aa6186/"}
+
+    class FakePage:
+        """Scripted overlay states (one item list per read); dialog control
+        clicks recorded, optionally failing."""
+
+        def __init__(self, states, click_fail=False):
+            self.states = states
+            self.click_fail = click_fail
+            self.clicked = []
+            self.escapes = 0
+
+        def evaluate(self, script):
+            if isinstance(self.states, Exception):
+                raise self.states
+            if len(self.states) > 1:
+                return self.states.pop(0)
+            return self.states[0]
+
+        def wait_for_timeout(self, ms):
+            pass
+
+        def get_by_role(self, role, name=None):
+            outer = self
+
+            class Role:
+                def __init__(self):
+                    self.role = role
+                    self.name = name
+
+                @property
+                def first(self):
+                    return self
+
+                def get_by_role(self, sub_role, name=None):
+                    return OverlayDismiss._click(outer, sub_role, name)
+
+            return Role()
+
+        @property
+        def keyboard(self):
+            outer = self
+
+            class Keys:
+                def press(self, key):
+                    outer.escapes += 1
+
+            return Keys()
+
+    @staticmethod
+    def _click(outer, sub_role, name):
+        class Click:
+            @property
+            def first(self):
+                return self
+
+            def click(self, timeout=None):
+                if outer.click_fail:
+                    raise RuntimeError("click intercepted")
+                outer.clicked.append(getattr(name, "pattern", name))
+
+        return Click()
+
+    def dismiss(self, page):
+        driver = PlaywrightDriver(Path("/tmp/lc-test-profile"))
+        driver._page_state = lambda pg: None
+        return driver._dismiss_overlay(page, "in-arnab")
+
+    def test_no_overlay_proceeds_without_touching_anything(self):
+        page = self.FakePage([[]])
+        self.assertTrue(self.dismiss(page))
+        self.assertEqual(page.escapes, 0)
+        self.assertEqual(page.clicked, [])
+
+    def test_overlay_cleared_by_escape_needs_no_click(self):
+        page = self.FakePage([[["Close Modal Dialog"]], []])
+        self.assertTrue(self.dismiss(page))
+        self.assertEqual(page.escapes, 1)
+        self.assertEqual(page.clicked, [])
+
+    def test_overlay_close_control_clicked_then_verified_gone(self):
+        page = self.FakePage([[["Reset", "Close Modal Dialog"]], [["Reset", "Close Modal Dialog"]], []])
+        self.assertTrue(self.dismiss(page))
+        self.assertEqual(len(page.clicked), 1)
+        # the fake records the exact-match regex the driver clicks with
+        self.assertTrue(page.clicked[0].startswith("Close"))
+        self.assertIn("Modal", page.clicked[0])
+
+    def test_overlay_without_clean_dismiss_blocks(self):
+        page = self.FakePage([[["Accept all", "Learn more"]], [["Accept all", "Learn more"]]])
+        self.assertFalse(self.dismiss(page))
+        self.assertEqual(page.clicked, [], "never click an accept to clear a promo")
+
+    def test_overlay_close_click_failure_blocks(self):
+        page = self.FakePage([[["Close"]], [["Close"]]], click_fail=True)
+        self.assertFalse(self.dismiss(page))
+
+    def test_unreadable_overlay_state_proceeds_to_guarded_clicks(self):
+        page = self.FakePage(RuntimeError("gone"))
+        self.assertTrue(self.dismiss(page))
+
+    def test_close_matcher_accepts_suffixed_close_and_declines(self):
+        close_for = PlaywrightDriver._overlay_close_for
+        self.assertEqual(close_for(["Reset", "Close Modal Dialog"]), "Close Modal Dialog")
+        self.assertEqual(close_for(["Dismiss"]), "Dismiss")
+        self.assertEqual(close_for(["No thanks", "Accept"]), "No thanks")
+        self.assertIsNone(close_for(["Reset", "Done"]))
+        self.assertIsNone(close_for(["Accept all", "Learn more"]))
+        self.assertIsNone(close_for([]))
+        self.assertIsNone(close_for(None))
+
+    def test_overlay_blocked_joins_the_storm_without_ledger_writes(self):
+        ledger = {"persons": {}, "sends": []}
+        from tempfile import TemporaryDirectory
+        tmp = TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        audit_path = Path(tmp.name) / "audit.jsonl"
+        summary = run_queue(
+            [dict(self.CAND, profile_url=f"https://www.linkedin.com/in/q{i}/") for i in range(5)],
+            {"min_score": 0}, ledger, audit_path,
+            live=True, cap=20, day=DAY, window=ALWAYS, note=None, limit=0,
+            min_delay=0, max_delay=0,
+            driver_factory=lambda: FakeDriver([OVERLAY_BLOCKED] * 5),
+            now_iso=NOW,
+        )
+        self.assertEqual(summary["stopped"], "unknown_controls")
+        self.assertEqual(summary["unknown_skips"], 4)
+        self.assertEqual(ledger["persons"], {})
+        rows = [json.loads(line) for line in audit_path.read_text(encoding="utf-8").splitlines()]
+        self.assertTrue(any("overlay dialog would not dismiss" in r["reason"] for r in rows))
 
 
 class NoteRequired(BotCase):

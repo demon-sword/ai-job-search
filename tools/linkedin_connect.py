@@ -227,7 +227,8 @@ UNKNOWN_CONTROLS = "unknown_controls"
 # distinct outcomes so the audit says which transition failed.
 MENU_MISSED = "menu_missed"
 DIALOG_MISSED = "dialog_missed"
-STEP_MISSES = (UNKNOWN_CONTROLS, MENU_MISSED, DIALOG_MISSED)
+OVERLAY_BLOCKED = "overlay_blocked"
+STEP_MISSES = (UNKNOWN_CONTROLS, MENU_MISSED, DIALOG_MISSED, OVERLAY_BLOCKED)
 # Invitable-confidence tiers for queue ordering: profiles with an observed
 # direct Connect go first, More-overflow profiles second, and profiles whose
 # entry variant is unknown last. The signal is recorded from cached data
@@ -668,6 +669,12 @@ class PlaywrightDriver(InviteDriver):
                     return "already_connected"
             except Exception as exc:
                 raise UnexpectedUI(f"could not read message button: {exc}") from exc
+            slug = self._slug(candidate)
+            # A page-covering overlay (promo/interstitial scrim) swallows
+            # entry clicks while reads see only its own buttons: dismiss it
+            # before any entry control is touched, else block for this run.
+            if not self._dismiss_overlay(page, slug):
+                return OVERLAY_BLOCKED
             # No scope guessing: read every button's accessible name page-wide
             # (labelledby/label/title/text resolution), partition them, and
             # verify every click against the opened dialog's addressee. A
@@ -687,7 +694,6 @@ class PlaywrightDriver(InviteDriver):
             except Exception as exc:
                 raise UnexpectedUI(f"profile content never rendered: {exc}") from exc
             scan = scan_entry_controls(acc_names)
-            slug = self._slug(candidate)
             for pos, index in enumerate(scan["connect"]):
                 outcome = self._press_connect_and_send(
                     page,
@@ -727,6 +733,100 @@ class PlaywrightDriver(InviteDriver):
             page.wait_for_timeout(500)
         except Exception:
             pass
+
+    def _overlay_state(self, page):
+        """Visible overlay dialogs, or None when the read fails. Each item
+        is one dialog's button names (aria-label or text, document order)."""
+        try:
+            return page.evaluate(
+                """() => {
+                    const vis = (e) => {
+                        const r = e.getBoundingClientRect();
+                        return r.width > 0 && r.height > 0;
+                    };
+                    const out = [];
+                    for (const d of document.querySelectorAll('[role="dialog"]')) {
+                        if (!vis(d)) continue;
+                        const names = [];
+                        for (const b of d.querySelectorAll('button, [role="button"], a')) {
+                            const r = b.getBoundingClientRect();
+                            if (r.width === 0 && r.height === 0) continue;
+                            const t = (b.getAttribute('aria-label') || b.innerText || '').trim();
+                            if (t) names.push(t);
+                        }
+                        out.push(names);
+                    }
+                    return out;
+                }"""
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def _overlay_close_for(names: list) -> str | None:
+        """A clean dismiss control among dialog button names: a Close/Dismiss
+        (any suffix, e.g. "Close Modal Dialog") or a decline ("No thanks",
+        "Not now", "Got it"). Never an accept - a dialog with no clean
+        dismiss blocks instead of being agreed to."""
+        for raw in names or []:
+            first = str(raw or "").strip().lower().split(" ", 1)[0]
+            if first in ("close", "dismiss"):
+                return str(raw).strip()
+            if str(raw or "").strip().lower() in ("no thanks", "not now", "got it"):
+                return str(raw).strip()
+        return None
+
+    def _dismiss_overlay(self, page, slug: str) -> bool:
+        """Dismiss a page-covering overlay (promo/interstitial scrim) before
+        any entry control is touched: it would otherwise swallow the More
+        clicks while the menu read sees only the overlay's own buttons.
+        Escape first, then one close/decline control click; screenshot
+        before and after. True when no overlay remains. Never raises for
+        mechanical failures (the downstream asserts still guard every
+        click); only a confirmed persisting overlay blocks. The challenge
+        family still raises."""
+        try:
+            state = self._overlay_state(page)
+        except Exception:
+            return True
+        if not state:
+            return True
+        self._capture(page, slug, "overlay_before", ok=False)
+        self._escape(page)
+        try:
+            state = self._overlay_state(page)
+        except Exception:
+            return True
+        if not state:
+            self._capture(page, slug, "overlay_after", ok=True)
+            return True
+        target = None
+        for names in state:
+            target = self._overlay_close_for(names)
+            if target is not None:
+                break
+        if target is None:
+            self._capture(page, slug, "overlay_after", ok=False)
+            return False
+        try:
+            page.get_by_role("dialog").first.get_by_role(
+                "button", name=re.compile(re.escape(target), re.I)
+            ).first.click(timeout=10000)
+            page.wait_for_timeout(1500)
+        except InviteStop:
+            raise
+        except Exception:
+            self._capture(page, slug, "overlay_after", ok=False)
+            return False
+        stop = self._page_state(page)
+        if stop is not None:
+            raise stop
+        try:
+            state = self._overlay_state(page)
+        except Exception:
+            return True
+        self._capture(page, slug, "overlay_after", ok=not state)
+        return not state
 
     @staticmethod
     def _slug(candidate: dict) -> str:
@@ -1325,6 +1425,7 @@ def run_queue(
                     UNKNOWN_CONTROLS: "unknown controls",
                     MENU_MISSED: "menu never verified (re-expanded once)",
                     DIALOG_MISSED: "invite dialog never verified (re-pressed once)",
+                    OVERLAY_BLOCKED: "overlay dialog would not dismiss",
                 }[outcome]
                 record = {
                     "ts": timestamp, "profile": key, "name": candidate.get("name"),

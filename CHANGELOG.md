@@ -63,6 +63,15 @@ per-file diff commands.
 
 ### Fixed
 
+- **LinkedIn connect bot dismisses page-covering overlays** - a promo
+  scrim was observed swallowing More clicks while menu reads saw only the
+  overlay's own buttons. Before any entry control is touched, the driver now
+  dismisses a visible overlay dialog via Escape then one close/decline
+  control (never an accept), with before/after captures; a persisting
+  overlay skips the profile as `overlay_blocked` inside the storm budget.
+  Pinned by an `OverlayDismiss` suite driving `_dismiss_overlay` against
+  scripted dialog states.
+
 - **LinkedIn connect bot overnight hardening** - three rails for tomorrow's
   send pass: (1) self-verifying transitions - every More expand asserts a
   non-empty menu containing the verified entry before clicking (one bounded
