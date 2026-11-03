@@ -35,6 +35,8 @@ from tools.linkedin_connect import (
     InviteDriver,
     InviteStop,
     LoginChallenge,
+    MORE_MENU_CONTAINER_SELECTOR,
+    MORE_MENU_ITEM_SELECTOR,
     MORE_MENU_READ_JS,
     PlaywrightDriver,
     RateLimited,
@@ -1285,6 +1287,51 @@ class MoreMenuLiRead(unittest.TestCase):
         self.assertIn("Connect", page.clicked,
                       f"the observed bare Connect must be clicked, clicked={page.clicked}")
         self.assertEqual(sent_notes, [None], "bare invite carries no note")
+
+
+class MenuReadQuery(unittest.TestCase):
+    """The menu reader is shipped JavaScript: Python tests never execute it,
+    so a quoting slip once made every live read throw (caught as empty) and
+    ship green. These pin its structure: fragments embedded verbatim, no
+    stray adjacent quotes, balanced parens."""
+
+    def test_fragments_embedded_verbatim(self):
+        self.assertIn(MORE_MENU_ITEM_SELECTOR, MORE_MENU_READ_JS)
+        self.assertIn(MORE_MENU_CONTAINER_SELECTOR, MORE_MENU_READ_JS)
+
+    def test_no_stray_adjacent_quotes(self):
+        # The only legitimate '' pairs are the two empty-string literals.
+        self.assertEqual(MORE_MENU_READ_JS.count("''"), 2)
+
+    def test_parens_balance_quote_aware(self):
+        js = MORE_MENU_READ_JS
+        depth = 0
+        i = 0
+        instr = None
+        while i < len(js):
+            char = js[i]
+            if instr:
+                if char == "\\":
+                    i += 1
+                elif char == instr:
+                    instr = None
+            elif char in ("\"", "'"):
+                instr = char
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                self.assertGreaterEqual(depth, 0, "closing paren without opener")
+            i += 1
+        self.assertIsNone(instr, "unterminated string literal")
+        self.assertEqual(depth, 0, "unbalanced parens in shipped JS")
+
+    def test_observed_menu_with_dialog_chrome_still_picks_connect(self):
+        # Exact item list from the live 22:13 probe capture (dialog chrome
+        # plus the real overflow entries): noise must not block the pick.
+        observed = ["Reset", "Done", "Close Modal Dialog", "Send profile in a message",
+                    "Save to PDF", "Connect", "Report Arnab", "Block Arnab", "About this member"]
+        self.assertEqual(pick_invite_entry(observed, "Arnab Banerjee", bare_ok=True), "Connect")
 
 
 class StepVerify(unittest.TestCase):

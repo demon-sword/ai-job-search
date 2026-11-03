@@ -180,11 +180,28 @@ BUTTON_NAMES_JS = (
 # Connect is misreported as a follow-only profile. Diagnosed live on
 # 2026-11-02: a probe read with the li clause listed "Connect" while the
 # run path without it saw nothing usable.
+MORE_MENU_ITEM_SELECTOR = (
+    '[role="menu"] [role="menuitem"], [role="menu"] button, '
+    '[role="menu"] a, [role="menu"] li, [role="dialog"] button'
+)
+MORE_MENU_CONTAINER_SELECTOR = '[role="menu"], .artdeco-dropdown__content'
 MORE_MENU_READ_JS = (
-    "Array.from(document.querySelectorAll("
-    "'[role=\"menu\"] [role=\"menuitem\"], [role=\"menu\"] button, '"
-    "'[role=\"menu\"] a, [role=\"dialog\"] button, [role=\"menu\"] li')).map("
-    "e => (e.getAttribute('aria-label') || e.innerText || ''))"
+    # Union of two strategies, deduplicated: per-element accessible names
+    # under role scopes (catches the role="menu" + menuitem render), plus
+    # raw text lines of the open dropdown containers themselves (catches a
+    # portal-rendered artdeco-dropdown whose items are click-handler divs
+    # with no button/link/menuitem role). The Set matters: one item seen by
+    # both strategies must not read as two "Connect"s and fail the
+    # uniqueness check closed. The selector fragments are single Python
+    # strings embedded verbatim - never re-split across fragments, which is
+    # how a stray quote once shipped a reader that threw on every page.
+    "Array.from(new Set(Array.from(document.querySelectorAll('"
+    + MORE_MENU_ITEM_SELECTOR
+    + "')).map(e => (e.getAttribute('aria-label') || e.innerText || '').trim())"
+      ".filter(Boolean).concat(Array.from(document.querySelectorAll('"
+    + MORE_MENU_CONTAINER_SELECTOR
+    + "')).map(m => m.innerText || '').join('\\n').split('\\n')"
+      ".map(s => s.trim()).filter(Boolean))))"
 )
 
 
@@ -837,10 +854,25 @@ class PlaywrightDriver(InviteDriver):
             return "unkeyable"
         return re.sub(r"[^a-z0-9]+", "-", key.strip("/").lower()).strip("-") or "unkeyable"
 
-    def _capture(self, page, slug: str, step: str, ok: bool) -> None:
+    def _menu_html(self, page, limit: int = 20000) -> str:
+        """Raw outerHTML of open menu containers (capped) - miss evidence
+        showing exactly which nodes the read scanned."""
+        try:
+            html = page.evaluate(
+                "Array.from(document.querySelectorAll("
+                "'[role=\"menu\"], .artdeco-dropdown__content'))"
+                ".map(m => m.outerHTML || '').join('\n')"
+            ) or ""
+        except Exception:
+            return ""
+        return str(html)[:limit]
+
+    def _capture(self, page, slug: str, step: str, ok: bool, read=None) -> None:
         """Save a screenshot + DOM snippet for one verified step, win or
-        lose. Best effort only: a capture failure must never fail the run,
-        and with no capture_dir configured nothing is written (tests)."""
+        lose. `read` optionally carries the step's raw read (menu names +
+        menu HTML) so a miss preserves exactly what the matcher saw. Best
+        effort only: a capture failure must never fail the run, and with no
+        capture_dir configured nothing is written (tests)."""
         if self._capture_dir is None:
             return
         try:
@@ -852,7 +884,13 @@ class PlaywrightDriver(InviteDriver):
                 dom = page.evaluate("() => document.body ? document.body.innerText.slice(0, 2000) : ''")
             except Exception:
                 dom = ""
-            base.with_suffix(".txt").write_text(scrub(str(dom or "")), encoding="utf-8")
+            text = scrub(str(dom or ""))
+            if read is not None:
+                try:
+                    text += "\n\nREAD " + json.dumps(read, ensure_ascii=False)[:20000]
+                except Exception:
+                    pass
+            base.with_suffix(".txt").write_text(text, encoding="utf-8")
         except Exception:
             pass
 
@@ -947,22 +985,28 @@ class PlaywrightDriver(InviteDriver):
             if entry_name is None:
                 # Assert failed (empty read or no usable entry): ONE bounded
                 # re-expand + re-read of the same More before giving up on it.
-                self._capture(page, slug, f"more{pos}_menu0", ok=False)
+                self._capture(page, slug, f"more{pos}_menu0", ok=False,
+                              read={"menu_names": menu_names,
+                                    "menu_html": self._menu_html(page)})
                 self._escape(page)
                 if self._expand_more(page, index):
                     menu_names = self._read_menu(page)
                     entry_name = pick_invite_entry(menu_names, name, bare_ok=True)
             if entry_name is None:
-                self._capture(page, slug, f"more{pos}_menu1", ok=False)
+                self._capture(page, slug, f"more{pos}_menu1", ok=False,
+                              read={"menu_names": menu_names,
+                                    "menu_html": self._menu_html(page)})
                 self._escape(page)
                 continue
-            self._capture(page, slug, f"more{pos}_menu", ok=True)
+            self._capture(page, slug, f"more{pos}_menu", ok=True,
+                          read={"menu_names": menu_names})
             clicked_any = True
             outcome = self._press_connect_and_send(
                 page,
                 lambda e=entry_name: page.locator(
                     'button, a, [role="button"], [role="menuitem"], '
-                    '[role="menuitemcheckbox"], li'
+                    '[role="menuitemcheckbox"], li, [role="menu"] div, '
+                    '.artdeco-dropdown__content div'
                 ).get_by_text(e, exact=True).first.click(timeout=10000),
                 candidate, note, slug, f"more{pos}",
             )
