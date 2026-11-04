@@ -71,6 +71,16 @@ per-file diff commands.
   overlay skips the profile as `overlay_blocked` inside the storm budget.
   Pinned by an `OverlayDismiss` suite driving `_dismiss_overlay` against
   scripted dialog states.
+- **LinkedIn connect bot clears ad lightboxes, prefers direct Connect** -
+  timed full-page ad lightboxes with no dialog role swallowed every click
+  across four profiles (storm-halted batch). Obstruction detection now
+  covers fullscreen-fixed scrims, clicks the exact close node, re-checks
+  before every More expand, and blocks after two reappearances; a visible
+  top-level Connect (any element, text-matched) is tried before the More
+  path. Also fixed: two shipped-JS readers threw on a bare `'\n'` inside
+  triple-quoted Python (same blind-read class as the quote slip); all
+  shipped blobs are now constants pinned by a `ShippedJs` structural suite
+  and node-checked.
 
 - **LinkedIn connect bot overnight hardening** - three rails for tomorrow's
   send pass: (1) self-verifying transitions - every More expand asserts a

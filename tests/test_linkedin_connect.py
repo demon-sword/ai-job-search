@@ -16,6 +16,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tools.linkedin_connect import (
+    BUTTON_NAMES_JS,
     DIALOG_MISSED,
     DISCOVERY_STATUSES,
     ENTRY_DIRECT,
@@ -35,9 +36,11 @@ from tools.linkedin_connect import (
     InviteDriver,
     InviteStop,
     LoginChallenge,
+    MENU_HTML_JS,
     MORE_MENU_CONTAINER_SELECTOR,
     MORE_MENU_ITEM_SELECTOR,
     MORE_MENU_READ_JS,
+    OVERLAY_STATE_JS,
     PlaywrightDriver,
     RateLimited,
     UnexpectedUI,
@@ -1264,11 +1267,12 @@ class MoreMenuLiRead(unittest.TestCase):
         """Emulates the observed DOM: menu items live in li elements, so
         evaluate() surfaces them only when the selector queries li."""
 
-        def __init__(self):
+        def __init__(self, overlays=None):
             self.read_selectors = []
             self.clicked = []
             self.keyboard = MoreMenuLiRead.FakeKeyboard()
             self.mouse = MoreMenuLiRead.FakeMouse()
+            self.overlays = list(overlays or [])
 
         def get_by_role(self, role):
             return MoreMenuLiRead.FakeRole(self.clicked, role)
@@ -1277,6 +1281,10 @@ class MoreMenuLiRead(unittest.TestCase):
             pass
 
         def evaluate(self, script):
+            if "alertdialog" in script:
+                if len(self.overlays) > 1:
+                    return self.overlays.pop(0)
+                return self.overlays[0] if self.overlays else []
             self.read_selectors.append(script)
             items = list(MoreMenuLiRead.DIALOG_CHROME)
             if '[role="menu"] li' in script:
@@ -1309,42 +1317,77 @@ class MoreMenuLiRead(unittest.TestCase):
         self.assertEqual(sent_notes, [None], "bare invite carries no note")
 
 
-class MenuReadQuery(unittest.TestCase):
-    """The menu reader is shipped JavaScript: Python tests never execute it,
-    so a quoting slip once made every live read throw (caught as empty) and
-    ship green. These pin its structure: fragments embedded verbatim, no
-    stray adjacent quotes, balanced parens."""
+class ShippedJs(unittest.TestCase):
+    """Shipped JavaScript runs only in the browser: Python tests never
+    execute it, so a quoting slip once made every live read throw (caught
+    as empty) and still ship green - twice (a stray '' in the menu reader,
+    a bare newline from '\n' in two other readers). These pin structure for
+    every blob: fragments embedded verbatim, balanced parens, and no raw
+    newline inside any JS string literal."""
 
-    def test_fragments_embedded_verbatim(self):
+    @staticmethod
+    def blobs():
+        return (MORE_MENU_READ_JS, OVERLAY_STATE_JS, MENU_HTML_JS, BUTTON_NAMES_JS)
+
+    @staticmethod
+    def js_string_bodies(js):
+        bodies = []
+        i = 0
+        while i < len(js):
+            char = js[i]
+            if char in ("\"", "'"):
+                buf = []
+                j = i + 1
+                while j < len(js):
+                    if js[j] == "\\":
+                        buf.append(js[j:j + 2])
+                        j += 2
+                        continue
+                    if js[j] == char:
+                        break
+                    buf.append(js[j])
+                    j += 1
+                bodies.append("".join(buf))
+                i = j + 1
+            else:
+                i += 1
+        return bodies
+
+    def test_menu_fragments_embedded_verbatim(self):
         self.assertIn(MORE_MENU_ITEM_SELECTOR, MORE_MENU_READ_JS)
         self.assertIn(MORE_MENU_CONTAINER_SELECTOR, MORE_MENU_READ_JS)
 
-    def test_no_stray_adjacent_quotes(self):
+    def test_no_stray_adjacent_quotes_in_menu_read(self):
         # The only legitimate '' pairs are the two empty-string literals.
         self.assertEqual(MORE_MENU_READ_JS.count("''"), 2)
 
+    def test_no_raw_newline_inside_js_strings(self):
+        for blob in self.blobs():
+            for body in self.js_string_bodies(blob):
+                self.assertNotIn("\n", body, f"bare newline breaks JS: {blob[:60]!r}")
+
     def test_parens_balance_quote_aware(self):
-        js = MORE_MENU_READ_JS
-        depth = 0
-        i = 0
-        instr = None
-        while i < len(js):
-            char = js[i]
-            if instr:
-                if char == "\\":
-                    i += 1
-                elif char == instr:
-                    instr = None
-            elif char in ("\"", "'"):
-                instr = char
-            elif char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
-                self.assertGreaterEqual(depth, 0, "closing paren without opener")
-            i += 1
-        self.assertIsNone(instr, "unterminated string literal")
-        self.assertEqual(depth, 0, "unbalanced parens in shipped JS")
+        for blob in self.blobs():
+            depth = 0
+            i = 0
+            instr = None
+            while i < len(blob):
+                char = blob[i]
+                if instr:
+                    if char == "\\":
+                        i += 1
+                    elif char == instr:
+                        instr = None
+                elif char in ("\"", "'"):
+                    instr = char
+                elif char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    self.assertGreaterEqual(depth, 0, "closing paren without opener")
+                i += 1
+            self.assertIsNone(instr, "unterminated string literal")
+            self.assertEqual(depth, 0, f"unbalanced parens in {blob[:60]!r}")
 
     def test_observed_menu_with_dialog_chrome_still_picks_connect(self):
         # Exact item list from the live 22:13 probe capture (dialog chrome
@@ -1352,6 +1395,90 @@ class MenuReadQuery(unittest.TestCase):
         observed = ["Reset", "Done", "Close Modal Dialog", "Send profile in a message",
                     "Save to PDF", "Connect", "Report Arnab", "Block Arnab", "About this member"]
         self.assertEqual(pick_invite_entry(observed, "Arnab Banerjee", bare_ok=True), "Connect")
+
+
+class DirectConnect(unittest.TestCase):
+    """Direct Connect is text-matched, never index-matched: a top-level
+    Connect carried by a link or ARIA button (not a <button> element) must
+    still be seen, while lookalikes never match."""
+
+    def test_pattern_matches_plain_and_named_connect(self):
+        pat = PlaywrightDriver.DIRECT_CONNECT_RE
+        for good in ("Connect", "Connect Arnab Banerjee", "connect", "  Connect  "):
+            self.assertIsNotNone(pat.search(good), good)
+
+    def test_pattern_rejects_lookalikes(self):
+        pat = PlaywrightDriver.DIRECT_CONNECT_RE
+        for bad in ("Connections", "Reconnect", "Connected", "Disconnect", "+ Follow", "Message"):
+            self.assertIsNone(pat.search(bad), bad)
+
+    class FakePage:
+        def __init__(self, directs, dialog=True):
+            self.directs = list(directs)
+            self.dialog = dialog
+            self.pressed = []
+            self.escapes = 0
+
+        def locator(self, selector):
+            outer = self
+
+            class Loc:
+                def filter(self, has_text=None):
+                    outer.filter_text = has_text
+                    return self
+
+                def count(self):
+                    return len(outer.directs)
+
+                def nth(self, index):
+                    class Click:
+                        def click(self, timeout=None):
+                            outer.pressed.append(outer.directs[index])
+
+                    return Click()
+
+            return Loc()
+
+        def wait_for_timeout(self, ms):
+            pass
+
+        @property
+        def keyboard(self):
+            outer = self
+
+            class Keys:
+                def press(self, key):
+                    outer.escapes += 1
+
+            return Keys()
+
+    def flow(self, page):
+        driver = PlaywrightDriver(Path("/tmp/lc-test-profile"))
+        driver._page_state = lambda pg: None
+        driver._dialog_targets = lambda pg, c: page.dialog
+        driver._send_bare_from_dialog = lambda pg, n: "sent"
+        return PlaywrightDriver._direct_connect_flow(
+            driver, page, {"name": "Niraj R Shuklaa",
+                           "profile_url": "https://www.linkedin.com/in/niraj-r-shuklaa-b520a231/"},
+            None, "in-niraj")
+
+    def test_sees_non_button_connect_and_sends(self):
+        page = self.FakePage(["a:Connect", "div[role=button]:Connect"])
+        self.assertEqual(self.flow(page), "sent")
+        self.assertEqual(page.pressed, ["a:Connect"])
+        self.assertIs(page.filter_text, PlaywrightDriver.DIRECT_CONNECT_RE)
+
+    def test_no_direct_controls_returns_none_without_pressing(self):
+        page = self.FakePage([])
+        self.assertIsNone(self.flow(page))
+        self.assertEqual(page.pressed, [])
+
+    def test_unverified_dialog_moves_to_next_control(self):
+        page = self.FakePage(["a:Connect", "button:Connect"], dialog=False)
+        self.assertIsNone(self.flow(page))
+        self.assertEqual(page.pressed,
+                         ["a:Connect", "a:Connect", "button:Connect", "button:Connect"],
+                         "each control gets the bounded re-press before moving on")
 
 
 class StepVerify(unittest.TestCase):
@@ -1396,8 +1523,9 @@ class StepVerify(unittest.TestCase):
         BOX = {"x": 10.0, "y": 20.0, "width": 100.0, "height": 30.0}
         CENTER = (60.0, 35.0)
 
-        def __init__(self, reads, mouse_fail_clicks=0):
+        def __init__(self, reads, mouse_fail_clicks=0, overlays=None):
             self.reads = list(reads)
+            self.overlays = list(overlays or [])
             self.expands = 0
             self.escapes = 0
             self.keys = []
@@ -1436,6 +1564,10 @@ class StepVerify(unittest.TestCase):
             pass
 
         def evaluate(self, script):
+            if "alertdialog" in script:
+                if len(self.overlays) > 1:
+                    return self.overlays.pop(0)
+                return self.overlays[0] if self.overlays else []
             if len(self.reads) > 1:
                 return self.reads.pop(0)
             return self.reads[0]
@@ -1611,14 +1743,21 @@ class OverlayDismiss(unittest.TestCase):
     CAND = {"name": "Arnab Banerjee",
             "profile_url": "https://www.linkedin.com/in/arnab-banerjee-86aa6186/"}
 
+    DIALOG = {"controls": [["Reset", "html>div:nth-of-type(1)>button:nth-of-type(1)"],
+                            ["Close Modal Dialog", "html>div:nth-of-type(1)>button:nth-of-type(2)"]]}
+    SCRIM = {"controls": [["Sponsored", "html>div:nth-of-type(3)>span:nth-of-type(1)"],
+                           ["Close", "html>div:nth-of-type(3)>button:nth-of-type(1)"]]}
+    NO_CLEAN = {"controls": [["Accept all", "html>div:nth-of-type(1)>button:nth-of-type(1)"],
+                              ["Learn more", "html>div:nth-of-type(1)>a:nth-of-type(1)"]]}
+
     class FakePage:
-        """Scripted overlay states (one item list per read); dialog control
-        clicks recorded, optionally failing."""
+        """Scripted obstruction states (dicts as _overlay_state returns);
+        css-path clicks recorded, optionally failing."""
 
         def __init__(self, states, click_fail=False):
             self.states = states
             self.click_fail = click_fail
-            self.clicked = []
+            self.clicked_paths = []
             self.escapes = 0
 
         def evaluate(self, script):
@@ -1631,22 +1770,20 @@ class OverlayDismiss(unittest.TestCase):
         def wait_for_timeout(self, ms):
             pass
 
-        def get_by_role(self, role, name=None):
+        def locator(self, selector):
             outer = self
 
-            class Role:
-                def __init__(self):
-                    self.role = role
-                    self.name = name
-
+            class Loc:
                 @property
                 def first(self):
                     return self
 
-                def get_by_role(self, sub_role, name=None):
-                    return OverlayDismiss._click(outer, sub_role, name)
+                def click(self, timeout=None):
+                    if outer.click_fail:
+                        raise RuntimeError("click intercepted")
+                    outer.clicked_paths.append(selector)
 
-            return Role()
+            return Loc()
 
         @property
         def keyboard(self):
@@ -1658,57 +1795,58 @@ class OverlayDismiss(unittest.TestCase):
 
             return Keys()
 
-    @staticmethod
-    def _click(outer, sub_role, name):
-        class Click:
-            @property
-            def first(self):
-                return self
-
-            def click(self, timeout=None):
-                if outer.click_fail:
-                    raise RuntimeError("click intercepted")
-                outer.clicked.append(getattr(name, "pattern", name))
-
-        return Click()
-
-    def dismiss(self, page):
+    def dismiss(self, page, obs=None):
         driver = PlaywrightDriver(Path("/tmp/lc-test-profile"))
         driver._page_state = lambda pg: None
-        return driver._dismiss_overlay(page, "in-arnab")
+        if obs is None:
+            return driver._dismiss_overlay(page, "in-arnab")
+        return driver._dismiss_overlay(page, "in-arnab", obs)
 
     def test_no_overlay_proceeds_without_touching_anything(self):
         page = self.FakePage([[]])
         self.assertTrue(self.dismiss(page))
         self.assertEqual(page.escapes, 0)
-        self.assertEqual(page.clicked, [])
+        self.assertEqual(page.clicked_paths, [])
 
     def test_overlay_cleared_by_escape_needs_no_click(self):
-        page = self.FakePage([[["Close Modal Dialog"]], []])
+        page = self.FakePage([[dict(self.DIALOG)], []])
         self.assertTrue(self.dismiss(page))
         self.assertEqual(page.escapes, 1)
-        self.assertEqual(page.clicked, [])
+        self.assertEqual(page.clicked_paths, [])
 
     def test_overlay_close_control_clicked_then_verified_gone(self):
-        page = self.FakePage([[["Reset", "Close Modal Dialog"]], [["Reset", "Close Modal Dialog"]], []])
+        page = self.FakePage([[dict(self.DIALOG)], [dict(self.DIALOG)], []])
         self.assertTrue(self.dismiss(page))
-        self.assertEqual(len(page.clicked), 1)
-        # the fake records the exact-match regex the driver clicks with
-        self.assertTrue(page.clicked[0].startswith("Close"))
-        self.assertIn("Modal", page.clicked[0])
+        self.assertEqual(page.clicked_paths,
+                         ["html>div:nth-of-type(1)>button:nth-of-type(2)"])
+
+    def test_roleless_scrim_close_clicked_by_exact_path(self):
+        page = self.FakePage([[dict(self.SCRIM)], [dict(self.SCRIM)], []])
+        self.assertTrue(self.dismiss(page))
+        self.assertEqual(page.clicked_paths,
+                         ["html>div:nth-of-type(3)>button:nth-of-type(1)"])
 
     def test_overlay_without_clean_dismiss_blocks(self):
-        page = self.FakePage([[["Accept all", "Learn more"]], [["Accept all", "Learn more"]]])
+        page = self.FakePage([[dict(self.NO_CLEAN)], [dict(self.NO_CLEAN)]])
         self.assertFalse(self.dismiss(page))
-        self.assertEqual(page.clicked, [], "never click an accept to clear a promo")
+        self.assertEqual(page.clicked_paths, [], "never click an accept to clear a promo")
 
     def test_overlay_close_click_failure_blocks(self):
-        page = self.FakePage([[["Close"]], [["Close"]]], click_fail=True)
+        close_only = {"controls": [["Close", "html>div:nth-of-type(1)>button:nth-of-type(1)"]]}
+        page = self.FakePage([[dict(close_only)], [dict(close_only)]], click_fail=True)
         self.assertFalse(self.dismiss(page))
 
     def test_unreadable_overlay_state_proceeds_to_guarded_clicks(self):
         page = self.FakePage(RuntimeError("gone"))
         self.assertTrue(self.dismiss(page))
+
+    def test_obstruction_seen_after_two_clears_blocks_without_clicking(self):
+        page = self.FakePage([[dict(self.SCRIM)]])
+        obs = {"sightings": 0}
+        results = [self.dismiss(page, obs) for _ in range(3)]
+        self.assertEqual(results, [False, False, False])
+        self.assertEqual(len(page.clicked_paths), 2,
+                         "the third sighting blocks before any click")
 
     def test_close_matcher_accepts_suffixed_close_and_declines(self):
         close_for = PlaywrightDriver._overlay_close_for

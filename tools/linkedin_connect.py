@@ -185,6 +185,65 @@ MORE_MENU_ITEM_SELECTOR = (
     '[role="menu"] a, [role="menu"] li, [role="dialog"] button'
 )
 MORE_MENU_CONTAINER_SELECTOR = '[role="menu"], .artdeco-dropdown__content'
+# NOTE for future edits: every JS blob below is a single-evaluated
+# expression. Inside triple-quoted Python, a bare '\n' becomes a real
+# newline and breaks the JS string it sits in - always write '\\n'. The
+# ShippedJs suite pins structure (verbatim fragments, paren balance) for
+# each blob; node --check the blob after any edit.
+OVERLAY_STATE_JS = (
+    """() => {
+        const vis = (e) => {
+            const r = e.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+        };
+        const path = (el) => {
+            const parts = [];
+            while (el && el !== document.body) {
+                let i = 1, sib = el;
+                while ((sib = sib.previousElementSibling)) i++;
+                parts.unshift(el.tagName.toLowerCase() + ':nth-of-type(' + i + ')');
+                el = el.parentElement;
+            }
+            return parts.join(' > ');
+        };
+        const controls = (root) => {
+            const out = [];
+            for (const b of root.querySelectorAll('button, [role="button"], a')) {
+                const r = b.getBoundingClientRect();
+                if (r.width === 0 && r.height === 0) continue;
+                const t = (b.getAttribute('aria-label') || b.innerText || '').trim();
+                if (t && out.length < 12) out.push([t, path(b)]);
+            }
+            return out;
+        };
+        const out = [];
+        const seen = new Set();
+        const push = (controls) => {
+            const key = controls.map((c) => c[0]).join('\\n');
+            if (controls.length && !seen.has(key)) { seen.add(key); out.push({controls}); }
+        };
+        for (const d of document.querySelectorAll('[role="dialog"], [role="alertdialog"]')) {
+            if (vis(d)) push(controls(d));
+        }
+        const vw = window.innerWidth || 1, vh = window.innerHeight || 1;
+        for (const el of document.querySelectorAll('body div')) {
+            let r;
+            try {
+                if (getComputedStyle(el).position !== 'fixed') continue;
+                r = el.getBoundingClientRect();
+            } catch (e) { continue; }
+            if (r.width * r.height < 0.7 * vw * vh) continue;
+            if (el.querySelector('[role="dialog"], [role="alertdialog"]')) continue;
+            push(controls(el));
+        }
+        return out;
+    }"""
+)
+MENU_HTML_JS = (
+    "Array.from(document.querySelectorAll("
+    "'[role=\"menu\"], .artdeco-dropdown__content'))"
+    ".map(m => m.outerHTML || '').join('\\n')"
+)
 MORE_MENU_READ_JS = (
     # Union of two strategies, deduplicated: per-element accessible names
     # under role scopes (catches the role="menu" + menuitem render), plus
@@ -687,10 +746,13 @@ class PlaywrightDriver(InviteDriver):
             except Exception as exc:
                 raise UnexpectedUI(f"could not read message button: {exc}") from exc
             slug = self._slug(candidate)
-            # A page-covering overlay (promo/interstitial scrim) swallows
-            # entry clicks while reads see only its own buttons: dismiss it
-            # before any entry control is touched, else block for this run.
-            if not self._dismiss_overlay(page, slug):
+            # A page-covering obstruction (dialog overlay or timed ad
+            # lightbox) swallows entry clicks while reads see only its own
+            # buttons: dismiss it before any entry control is touched, else
+            # block for this run. Timed popups can appear mid-flow, so the
+            # same check re-runs before every More expand (shared counter).
+            obstruction = {"sightings": 0}
+            if not self._dismiss_overlay(page, slug, obstruction):
                 return OVERLAY_BLOCKED
             # No scope guessing: read every button's accessible name page-wide
             # (labelledby/label/title/text resolution), partition them, and
@@ -711,18 +773,13 @@ class PlaywrightDriver(InviteDriver):
             except Exception as exc:
                 raise UnexpectedUI(f"profile content never rendered: {exc}") from exc
             scan = scan_entry_controls(acc_names)
-            for pos, index in enumerate(scan["connect"]):
-                outcome = self._press_connect_and_send(
-                    page,
-                    lambda i=index: page.get_by_role("button").nth(i).click(timeout=10000),
-                    candidate, note, slug, f"direct{pos}",
-                )
-                if outcome is not None:
-                    return outcome
-                self._escape(page)
+            outcome = self._direct_connect_flow(page, candidate, note, slug)
+            if outcome is not None:
+                return outcome
             # No verified Connect: a follow-only profile may still invite
             # via More -> Connect; anything else is an unknown-controls skip.
-            more_result = self._more_connect_flow(page, scan["more"], candidate, note)
+            more_result = self._more_connect_flow(page, scan["more"], candidate, note,
+                                                   obstruction)
             if more_result is not None:
                 return more_result
             if scan["follow"]:
@@ -752,30 +809,13 @@ class PlaywrightDriver(InviteDriver):
             pass
 
     def _overlay_state(self, page):
-        """Visible overlay dialogs, or None when the read fails. Each item
-        is one dialog's button names (aria-label or text, document order)."""
+        """Visible obstructions, or None when the read fails. Each item is
+        {"controls": [[name, css_path], ...]} for one dialog-role overlay or
+        one full-viewport fixed scrim (ad lightboxes that carry no dialog
+        role). The css path lets the clicker press the exact node with a
+        trusted event instead of guessing page-wide."""
         try:
-            return page.evaluate(
-                """() => {
-                    const vis = (e) => {
-                        const r = e.getBoundingClientRect();
-                        return r.width > 0 && r.height > 0;
-                    };
-                    const out = [];
-                    for (const d of document.querySelectorAll('[role="dialog"]')) {
-                        if (!vis(d)) continue;
-                        const names = [];
-                        for (const b of d.querySelectorAll('button, [role="button"], a')) {
-                            const r = b.getBoundingClientRect();
-                            if (r.width === 0 && r.height === 0) continue;
-                            const t = (b.getAttribute('aria-label') || b.innerText || '').trim();
-                            if (t) names.push(t);
-                        }
-                        out.push(names);
-                    }
-                    return out;
-                }"""
-            )
+            return page.evaluate(OVERLAY_STATE_JS)
         except Exception:
             return None
 
@@ -793,53 +833,68 @@ class PlaywrightDriver(InviteDriver):
                 return str(raw).strip()
         return None
 
-    def _dismiss_overlay(self, page, slug: str) -> bool:
-        """Dismiss a page-covering overlay (promo/interstitial scrim) before
-        any entry control is touched: it would otherwise swallow the More
-        clicks while the menu read sees only the overlay's own buttons.
-        Escape first, then one close/decline control click; screenshot
-        before and after. True when no overlay remains. Never raises for
-        mechanical failures (the downstream asserts still guard every
-        click); only a confirmed persisting overlay blocks. The challenge
-        family still raises."""
+    def _dismiss_overlay(self, page, slug: str, obs: dict | None = None) -> bool:
+        """Dismiss a page-covering obstruction (dialog overlay or role-less
+        ad lightbox) before any entry control is touched: it would otherwise
+        swallow the clicks while reads see only its own buttons. Escape
+        first, then one close/decline click on the exact node; screenshot
+        before and after, and verify it is gone. `obs` tracks sightings on
+        this page: an obstruction seen after two clears is reappearing, so
+        block instead of clicking a third time. True when no obstruction
+        remains. Never raises for mechanical failures (the downstream
+        asserts still guard every click); only a confirmed persisting
+        obstruction blocks. The challenge family still raises."""
+        if obs is None:
+            obs = {"sightings": 0}
         try:
-            state = self._overlay_state(page)
+            state = self._overlay_state(page) or []
         except Exception:
             return True
         if not state:
             return True
-        self._capture(page, slug, "overlay_before", ok=False)
+        obs["sightings"] = obs.get("sightings", 0) + 1
+        if obs["sightings"] > 2:
+            self._capture(page, slug, "overlay_reappeared", ok=False,
+                          read={"sightings": obs["sightings"]})
+            return False
+        self._capture(page, slug, "overlay_before", ok=False,
+                      read={"sightings": obs["sightings"]})
         self._escape(page)
         try:
-            state = self._overlay_state(page)
+            state = self._overlay_state(page) or []
         except Exception:
             return True
         if not state:
             self._capture(page, slug, "overlay_after", ok=True)
             return True
-        target = None
-        for names in state:
-            target = self._overlay_close_for(names)
+        path = None
+        for item in state:
+            controls = item.get("controls", []) if isinstance(item, dict) else []
+            target = self._overlay_close_for([name for name, _ in controls])
             if target is not None:
+                for name, css in controls:
+                    if name == target:
+                        path = css
+                        break
                 break
-        if target is None:
-            self._capture(page, slug, "overlay_after", ok=False)
+        if path is None:
+            self._capture(page, slug, "overlay_after", ok=False,
+                          read={"reason": "no clean dismiss control"})
             return False
         try:
-            page.get_by_role("dialog").first.get_by_role(
-                "button", name=re.compile(re.escape(target), re.I)
-            ).first.click(timeout=10000)
+            page.locator(path).first.click(timeout=10000)
             page.wait_for_timeout(1500)
         except InviteStop:
             raise
         except Exception:
-            self._capture(page, slug, "overlay_after", ok=False)
+            self._capture(page, slug, "overlay_after", ok=False,
+                          read={"reason": "dismiss click failed"})
             return False
         stop = self._page_state(page)
         if stop is not None:
             raise stop
         try:
-            state = self._overlay_state(page)
+            state = self._overlay_state(page) or []
         except Exception:
             return True
         self._capture(page, slug, "overlay_after", ok=not state)
@@ -858,11 +913,7 @@ class PlaywrightDriver(InviteDriver):
         """Raw outerHTML of open menu containers (capped) - miss evidence
         showing exactly which nodes the read scanned."""
         try:
-            html = page.evaluate(
-                "Array.from(document.querySelectorAll("
-                "'[role=\"menu\"], .artdeco-dropdown__content'))"
-                ".map(m => m.outerHTML || '').join('\n')"
-            ) or ""
+            html = page.evaluate(MENU_HTML_JS) or ""
         except Exception:
             return ""
         return str(html)[:limit]
@@ -994,6 +1045,39 @@ class PlaywrightDriver(InviteDriver):
         self._escape(page)
         return None
 
+    # A visible top-level Connect control, whatever element carries it.
+    # Anchored at the start so "Connections" and "Reconnect" never match;
+    # a suggested card's Connect is harmless because every press still ends
+    # at a name-verified dialog before any send.
+    DIRECT_CONNECT_RE = re.compile(r"^\s*Connect(\s|$)", re.I)
+
+    def _direct_connect_controls(self, page):
+        """Locator over visible top-level Connect controls (buttons, links,
+        ARIA buttons alike). Text-matched, never index-matched, so a Connect
+        that is not a <button> element is still seen."""
+        return page.locator('button, a, [role="button"]').filter(has_text=self.DIRECT_CONNECT_RE)
+
+    def _direct_connect_flow(self, page, candidate: dict, note: str | None, slug: str):
+        """Prefer a visible direct Connect button whenever present; the More
+        path runs only when none exists or none verifies. Up to three
+        attempts, each dialog-verified; returns an outcome or None."""
+        try:
+            total = self._direct_connect_controls(page).count()
+        except InviteStop:
+            raise
+        except Exception:
+            return None
+        for pos in range(min(total, 3)):
+            outcome = self._press_connect_and_send(
+                page,
+                lambda k=pos: self._direct_connect_controls(page).nth(k).click(timeout=10000),
+                candidate, note, slug, f"direct{pos}",
+            )
+            if outcome is not None:
+                return outcome
+            self._escape(page)
+        return None
+
     def _press_connect_and_send(self, page, press, candidate: dict, note: str | None,
                                 slug: str, tag: str):
         """One self-verifying Connect transition: press the control, assert
@@ -1060,7 +1144,8 @@ class PlaywrightDriver(InviteDriver):
         except Exception:
             return []
 
-    def _more_connect_flow(self, page, more_indices: list, candidate: dict, note: str | None):
+    def _more_connect_flow(self, page, more_indices: list, candidate: dict, note: str | None,
+                             obstruction: dict | None = None):
         """Follow-entry invite path over up to three More buttons. Every
         transition is asserted: after expanding, the menu read must be
         non-empty and contain the verified entry before clicking (ONE bounded
@@ -1076,7 +1161,13 @@ class PlaywrightDriver(InviteDriver):
         name = candidate.get("name") or ""
         tried_any = False
         clicked_any = False
+        if obstruction is None:
+            obstruction = {"sightings": 0}
         for pos, index in enumerate(more_indices[:3]):
+            # Timed lightboxes pop mid-flow: re-verify the page is clear
+            # before every expand, sharing the page's reappear counter.
+            if not self._dismiss_overlay(page, slug, obstruction):
+                return OVERLAY_BLOCKED
             if not self._expand_more(page, index):
                 continue
             tried_any = True
