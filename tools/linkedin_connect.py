@@ -1601,6 +1601,7 @@ def run_queue(
     sleeper=None,
     rng: random.Random | None = None,
     now_iso: str | None = None,
+    clock=None,
 ) -> dict:
     """Execute one bot pass. Returns a summary dict; raises InviteStop on a
     safety signal and SystemExit(2) is left to the CLI wrapper.
@@ -1612,9 +1613,15 @@ def run_queue(
     controls skip against a storm budget instead: the 4th consecutive
     unknown halts the run loud (UI drift must be noticed, not plowed
     through), while anything else decided in between resets the count.
+
+    Every decision row is stamped at its own write time: the clock (or
+    utcnow_iso) is read fresh for each decided candidate, so sequential
+    sends never share a run-start ts. A fixed now_iso still freezes every
+    stamp - tests use that for determinism, never live runs.
     """
     rng = rng or random.Random()
-    timestamp = now_iso or utcnow_iso()
+    tick = clock or utcnow_iso
+    timestamp = now_iso or tick()
     summary: dict = {
         "live": live,
         "day": day,
@@ -1673,6 +1680,9 @@ def run_queue(
             candidate = candidates[idx]
             if limit > 0 and (summary["sent"] + summary["would_send"] + summary["skipped"]) >= limit:
                 break
+            # Write-time stamp: read the clock fresh per decided candidate
+            # (a fixed now_iso still freezes it for deterministic tests).
+            timestamp = now_iso or tick()
             try:
                 key = canonical_key(str(candidate.get("profile_url") or ""))
             except ValueError as exc:

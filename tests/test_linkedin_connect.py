@@ -1984,6 +1984,44 @@ class NoteRequired(BotCase):
         self.assertTrue(any("no note is ever written" in reason for reason in reasons))
 
 
+class DistinctStamps(BotCase):
+    """Regression for the 2026-11-04 evening batch: all 8 send rows
+    carried the identical run-start ts, so per-send times were
+    untrustworthy. Every decision row must be stamped at its own write
+    time - sequential sends carry distinct timestamps, and no row reuses
+    a prior row's ts."""
+
+    def _clock(self, n):
+        stamps = [f"{DAY}T10:00:{i:02d}+05:30" for i in range(n)]
+        calls = []
+
+        def tick():
+            calls.append(1)
+            return stamps.pop(0)
+
+        return tick, calls
+
+    def test_sequential_sends_carry_distinct_write_time_stamps(self):
+        tick, calls = self._clock(6)
+        summary = self.run_live([cand(f"s{i}") for i in range(3)], script=["sent"] * 3,
+                                now_iso=None, clock=tick)
+        self.assertEqual(summary["sent"], 3)
+        stamps = [r["ts"] for r in summary["decisions"]]
+        self.assertEqual(len(set(stamps)), 3, "each send stamped at its own write time")
+        self.assertEqual(len(calls), 4, "one run-start read plus one per decided candidate")
+
+    def test_no_row_reuses_a_prior_row_ts(self):
+        prior = {"ts": f"{DAY}T09:00:00+05:30", "decision": "send", "result": "sent", "live": True}
+        self.audit.parent.mkdir(parents=True, exist_ok=True)
+        self.audit.write_text(json.dumps(prior) + "\n", encoding="utf-8")
+        tick, _ = self._clock(6)
+        summary = self.run_live([cand(f"s{i}") for i in range(3)], script=["sent"] * 3,
+                                now_iso=None, clock=tick)
+        stamps = [r["ts"] for r in summary["decisions"]]
+        self.assertNotIn(prior["ts"], stamps, "no row reuses a prior row ts")
+        self.assertEqual(len(set(stamps)), len(stamps))
+
+
 class UnknownStorm(BotCase):
     def test_fourth_consecutive_unknown_halts(self):
         self.assertEqual(MAX_CONSECUTIVE_UNKNOWN, 3)
