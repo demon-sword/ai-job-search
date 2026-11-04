@@ -15,6 +15,22 @@ per-file diff commands.
 
 ### Added
 
+- **LinkedIn connect bot** (`tools/linkedin_connect.py`,
+  `tools/linkedin_connect_targets.json`, `tests/test_linkedin_connect.py`) -
+  sends connection invites to hiring people (recruiters, hiring managers, eng
+  leaders) from a hand-collected profile queue, scored against configurable
+  targeting data. Dry-run by default with an explicit `--live` flag, hard
+  daily cap of 20 from a durable ledger, instant stop (exit 2, no retry) on
+  login/captcha/verification/rate-limit/unexpected-UI states, jittered pacing
+  inside a daily window, append-only audit log, dedupe across restarts, and no
+  credentials in the repo (local browser profile only). The `discover`
+  subcommand finds profiles itself from role-seed x GenAI-domain keywords in
+  the targets file (no company mining, no pasted URLs), queuing at most 20
+  new profiles/day behind strict search/page/profile-view budgets, a local
+  page cache, and the same stop/window/dry-run discipline; `run
+  --from-ledger` invites the queued profiles. Personal use only: automated
+  invites violate LinkedIn's ToS, and discovery raises the risk further.
+
 - **`/expand` project and portfolio expansion** (`.claude/commands/expand.md`,
   `tests/test_expand_command.py`) - expands candidate discovery
   to technical projects from public GitHub repositories, extracting structured summaries
@@ -46,6 +62,49 @@ per-file diff commands.
   LaTeX toolchain.
 
 ### Fixed
+
+- **LinkedIn connect bot dismisses page-covering overlays** - a promo
+  scrim was observed swallowing More clicks while menu reads saw only the
+  overlay's own buttons. Before any entry control is touched, the driver now
+  dismisses a visible overlay dialog via Escape then one close/decline
+  control (never an accept), with before/after captures; a persisting
+  overlay skips the profile as `overlay_blocked` inside the storm budget.
+  Pinned by an `OverlayDismiss` suite driving `_dismiss_overlay` against
+  scripted dialog states.
+- **LinkedIn connect bot clears ad lightboxes, prefers direct Connect** -
+  timed full-page ad lightboxes with no dialog role swallowed every click
+  across four profiles (storm-halted batch). Obstruction detection now
+  covers fullscreen-fixed scrims, clicks the exact close node, re-checks
+  before every More expand, and blocks after two reappearances; a visible
+  top-level Connect (any element, text-matched) is tried before the More
+  path. Also fixed: two shipped-JS readers threw on a bare `'\n'` inside
+  triple-quoted Python (same blind-read class as the quote slip); all
+  shipped blobs are now constants pinned by a `ShippedJs` structural suite
+  and node-checked.
+
+- **LinkedIn connect bot overnight hardening** - three rails for tomorrow's
+  send pass: (1) self-verifying transitions - every More expand asserts a
+  non-empty menu containing the verified entry before clicking (one bounded
+  re-expand + re-read), every Connect click asserts a verified dialog before
+  sending (one bounded re-press), every attempt saves a screenshot + DOM
+  snippet under `linkedin_connect/diag_run/`, and step misses skip as
+  `menu_missed`/`dialog_missed` inside the unknown-controls storm budget;
+  (2) queue ordering by invitable-confidence - direct-Connect first,
+  More-overflow second, unknown variants last, scored from cached discovery
+  data only (the `entry` recorded on discovery profile views,
+  prior `follow_only`/`note_required` outcomes), stable within a tier;
+  (3) hard weekly cap of 90 sends on a rolling 7-day window alongside the
+  daily 20, with refuse-to-start and mid-loop halt, surfaced in `status`.
+
+- **LinkedIn connect bot reads More-menu `li` items** - the live
+  More -> Connect path only queried `[role="menuitem"]`/button/anchor (plus
+  dialog buttons), but LinkedIn renders the overflow entries as plain `<li>`
+  under `[role="menu"]`, so the run path saw only dialog chrome and
+  misreported a profile with a real Connect as follow-only (observed live:
+  a probe read with the `li` clause listed a unique bare Connect while two
+  live passes skipped). The shared `MORE_MENU_READ_JS` selector now includes
+  the `li` clause, pinned by a `MoreMenuLiRead` regression test driving
+  `_more_connect_flow` against the observed menu shape.
 
 - **`jobindex-search detail` no longer fetches arbitrary URLs or invents posting-shaped
   output** (#447) - the command fetched any `http(s)` input verbatim (no host check) and,
