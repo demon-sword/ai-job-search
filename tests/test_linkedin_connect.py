@@ -18,6 +18,7 @@ from tempfile import TemporaryDirectory
 from tools.linkedin_connect import (
     BUTTON_NAMES_JS,
     DIALOG_MISSED,
+    DESTRUCTIVE_AVOIDED,
     DISCOVERY_STATUSES,
     ENTRY_DIRECT,
     ENTRY_MORE,
@@ -57,11 +58,13 @@ from tools.linkedin_connect import (
     verify_dialog_target,
     cmd_discover,
     cmd_run,
+    destructive_hint,
     discovery_defaults,
     discovery_queries,
     effective_cap,
     entry_variant,
     inside_window,
+    is_exact_more_name,
     load_cache,
     load_ledger,
     pace_delay,
@@ -1144,6 +1147,82 @@ class CapturedPageScan(unittest.TestCase):
         self.assertEqual(scan["connect"], [])
 
 
+class YogiFollowStateCapture(unittest.TestCase):
+    """Regression fixture for the 2026-11-04 evening mis-click: on a
+    follow-state profile the entry click landed on Following (opening an
+    Unfollow confirmation) instead of More, because expansion clicked a
+    button-role ordinal from a different index space than the scan. Button
+    names below are transcribed verbatim from the live probe read of
+    linkedin.com/in/yogirajpal (the diag capture itself is gitignored
+    runtime state); the dialog text is transcribed from the miss capture.
+    Expansion must resolve by exact accessible name only - Following must
+    never be clickable as a More."""
+
+    ENTRY_BUTTONS = [
+        "Skip to search", "Skip to main content", "Skip to primary content",
+        "Skip to aside", "Skip to footer", "Close jump menu",
+        "Home, 1 new notification", "Me", "For Business", "More",
+        "Following, click to unfollow Yogi Rajpal",
+        "Following, click to unfollow Yogi Rajpal", "More",
+        "Following, click to unfollow Yogi Rajpal", "More",
+        "… more", "Next",
+    ]
+
+    DIALOG_TEXT = (
+        "Unfollow Yogi\n\nStop seeing activity from Yogi on your feed. "
+        "Yogi won't be notified that you've unfollowed.\n\nCancel\nUnfollow"
+    )
+
+    def test_exact_more_resolves_only_true_mores(self):
+        positions = [i for i, name in enumerate(self.ENTRY_BUTTONS)
+                     if is_exact_more_name(name)]
+        self.assertEqual(positions, [9, 12, 14])
+
+    def test_following_never_matches_more_or_follow_queries(self):
+        following = "Following, click to unfollow Yogi Rajpal"
+        self.assertFalse(is_exact_more_name(following))
+        scan = scan_entry_controls([following, "+ Follow"])
+        self.assertTrue(scan["follow"], "the real Follow still counts")
+        self.assertEqual(scan["more"], [])
+
+    def test_glyph_and_titled_mores_are_not_exact(self):
+        self.assertFalse(is_exact_more_name("… more"))
+        self.assertFalse(is_exact_more_name("More options"))
+        self.assertTrue(is_exact_more_name("  More  "))
+
+    def test_unfollow_dialog_is_destructive(self):
+        self.assertEqual(destructive_hint(self.DIALOG_TEXT), "unfollow")
+        self.assertEqual(destructive_hint("Remove this Connection? Remove connection"), "remove connection")
+        self.assertEqual(destructive_hint("Report this profile? Report"), "report")
+        self.assertEqual(destructive_hint("Block Yogi Rajpal? Block"), "block")
+        self.assertEqual(destructive_hint("Withdraw your invitation? Withdraw"), "withdraw")
+
+    def test_invite_and_plain_dialogs_are_not_destructive(self):
+        self.assertIsNone(destructive_hint("Send invitation to Yogi Rajpal. Add a note. Send"))
+        self.assertIsNone(destructive_hint("Connect"))
+        self.assertIsNone(destructive_hint(""))
+        self.assertIsNone(destructive_hint(None))
+
+
+class DestructiveAvoidedRun(BotCase):
+    def test_destructive_skip_avoids_state_change_and_consumes_no_cap(self):
+        summary = self.run_live([cand("a")], script=[DESTRUCTIVE_AVOIDED])
+        self.assertEqual(summary["sent"], 0)
+        self.assertEqual(summary["skipped"], 1)
+        self.assertNotIn("in:a", self.ledger["persons"],
+                         "avoided profiles stay queued - the ledger is never written over")
+        self.assertEqual(self.ledger["sends"], [], "the skip consumed no cap")
+        reasons = [r["reason"] for r in summary["decisions"] if r["decision"] == "skip"]
+        self.assertTrue(any("destructive" in reason for reason in reasons))
+        self.assertEqual(summary["decisions"][0]["result"], DESTRUCTIVE_AVOIDED)
+
+    def test_destructive_avoids_feed_the_storm_guard(self):
+        driver = FakeDriver(script=[DESTRUCTIVE_AVOIDED] * 6)
+        summary = self.run_live([cand(f"d{i}") for i in range(6)], factory=lambda: driver)
+        self.assertEqual(summary["stopped"], "unknown_controls")
+        self.assertEqual(len(driver.calls), 4, "the 4th consecutive avoid halts the run")
+
+
 class VerifyDialogTarget(unittest.TestCase):
     def test_full_name_match_verifies(self):
         self.assertTrue(verify_dialog_target("Send invitation to Arnab Banerjee", "Arnab Banerjee"))
@@ -1274,7 +1353,7 @@ class MoreMenuLiRead(unittest.TestCase):
             self.mouse = MoreMenuLiRead.FakeMouse()
             self.overlays = list(overlays or [])
 
-        def get_by_role(self, role):
+        def get_by_role(self, role, name=None, **kw):
             return MoreMenuLiRead.FakeRole(self.clicked, role)
 
         def wait_for_timeout(self, ms):
@@ -1530,10 +1609,12 @@ class StepVerify(unittest.TestCase):
             self.escapes = 0
             self.keys = []
             self.focuses = 0
+            self.role_calls = []
             self.mouse = StepVerify.FakeMouse(fail_clicks=mouse_fail_clicks)
 
-        def get_by_role(self, role, name=None):
+        def get_by_role(self, role, name=None, **kw):
             outer = self
+            outer.role_calls.append((role, name, kw))
 
             class Role:
                 def nth(self, index):
@@ -1549,7 +1630,7 @@ class StepVerify(unittest.TestCase):
                 def first(self):
                     return self
 
-                def get_by_role(self, sub_role, name=None):
+                def get_by_role(self, sub_role, name=None, **kw):
                     return self
 
                 def focus(self, timeout=None):
@@ -1626,6 +1707,17 @@ class StepVerify(unittest.TestCase):
         self.assertEqual(result, MENU_MISSED)
         self.assertEqual(page.expands, 2, "initial expand + ONE bounded re-expand")
         self.assertEqual(page.mouse.clicks, [], "no press without a verified menu")
+
+    def test_expansion_resolves_exact_more_never_an_ordinal(self):
+        page = self.FakePage([self.MENU])
+        result, _ = self.flow(page)
+        self.assertEqual(result, "sent")
+        named = [(name, kw) for (role, name, kw) in page.role_calls
+                 if role == "button" and isinstance(name, str)]
+        self.assertTrue(named, "expansion queries by accessible name")
+        for name, kw in named:
+            self.assertEqual(name, "More", "Following must never resolve as the target")
+            self.assertTrue(kw.get("exact"), "whole-name match, never substring")
 
     def test_menu_recovers_on_reread_then_sends(self):
         page = self.FakePage([self.CHROME, self.MENU])

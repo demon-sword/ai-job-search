@@ -163,6 +163,36 @@ def verify_dialog_target(dialog_text: str, candidate_name: str) -> bool:
     return want in have
 
 
+def is_exact_more_name(raw: str) -> bool:
+    """True only for a control whose whole accessible name is More.
+    Titled variants ("More options") and glyph-prefixed post menus
+    ("… more") are NOT More: resolving expansion by this predicate keeps
+    the click in the same query space as the match, so a Following button
+    adjacent to More can never be resolved as the expansion target.
+    Diagnosed live 2026-11-04: an index from the scan's button-only list
+    was clicked as a button-role ordinal, landing on Following and opening
+    an Unfollow confirmation."""
+    return re.sub(r"\s+", " ", str(raw or "")).strip().lower() == "more"
+
+
+_DESTRUCTIVE_HINTS = ("unfollow", "remove connection", "report", "block", "withdraw")
+
+
+def destructive_hint(text: str) -> str | None:
+    """The destructive action named by an open dialog's text, or None.
+    Matches Unfollow / Remove-connection / Report / Block / Withdraw
+    confirmations; invite dialogs ("Send invitation to ...") never match,
+    so the guard fails closed toward a cancelled skip, never toward a
+    blocked send."""
+    have = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    if not have:
+        return None
+    for hint in _DESTRUCTIVE_HINTS:
+        if hint in have:
+            return hint
+    return None
+
+
 BUTTON_NAMES_JS = (
     "Array.from(document.querySelectorAll('button')).map(e => {"
     " const by = e.getAttribute('aria-labelledby');"
@@ -278,6 +308,10 @@ def scan_entry_controls(names) -> dict:
     line handled by pick_invite_entry."""
     connect, more = [], []
     follow = False
+    # Classifier only: the returned indices budget attempts but are never
+    # clicked (their button-only ordinals live in a different index space
+    # than button-role queries). Expansion resolves exact-name Mores via
+    # is_exact_more_name instead - see _expand_more.
     for index, raw in enumerate(names or []):
         name = _norm_low(raw)
         if name == "connect" or name.startswith("connect "):
@@ -304,7 +338,14 @@ UNKNOWN_CONTROLS = "unknown_controls"
 MENU_MISSED = "menu_missed"
 DIALOG_MISSED = "dialog_missed"
 OVERLAY_BLOCKED = "overlay_blocked"
-STEP_MISSES = (UNKNOWN_CONTROLS, MENU_MISSED, DIALOG_MISSED, OVERLAY_BLOCKED)
+# A destructive confirmation (Unfollow/Remove/Report/Block/Withdraw) opened
+# by a press: Cancel/Close it at once, screenshot it, and skip the profile.
+# Never a ledger write (the profile stays queued) and never a re-press near
+# the danger - but it still feeds the storm streak, because a LinkedIn
+# redesign behind repeated avoids is UI drift that must halt the run.
+DESTRUCTIVE_AVOIDED = "destructive_dialog_avoided"
+STEP_MISSES = (UNKNOWN_CONTROLS, MENU_MISSED, DIALOG_MISSED, OVERLAY_BLOCKED,
+               DESTRUCTIVE_AVOIDED)
 # Invitable-confidence tiers for queue ordering: profiles with an observed
 # direct Connect go first, More-overflow profiles second, and profiles whose
 # entry variant is unknown last. The signal is recorded from cached data
@@ -1011,11 +1052,11 @@ class PlaywrightDriver(InviteDriver):
         self._escape(page)
         return None
 
-    def _keyboard_press_entry(self, page, index: int, entry_name: str, candidate: dict,
+    def _keyboard_press_entry(self, page, pos: int, entry_name: str, candidate: dict,
                               note: str | None, slug: str, tag: str):
         """The one allowed fallback: re-open the More, keyboard-focus the
         entry, press Enter. Same asserts and captures as the pointer path."""
-        if not self._expand_more(page, index):
+        if not self._expand_more(page, pos):
             return None
         if pick_invite_entry(self._read_menu(page), candidate.get("name") or "",
                              bare_ok=True) != entry_name:
@@ -1104,6 +1145,9 @@ class PlaywrightDriver(InviteDriver):
                 if outcome == "sent":
                     self._capture(page, slug, f"{tag}_sent", ok=True)
                 return outcome
+            avoided = self._cancel_destructive_dialog(page, slug, f"{tag}_press{attempt}")
+            if avoided is not None:
+                return avoided
             self._capture(page, slug, f"{tag}_dialog{attempt}", ok=False)
             self._escape(page)
         return None
@@ -1119,12 +1163,19 @@ class PlaywrightDriver(InviteDriver):
             return False
         return verify_dialog_target(text, candidate.get("name") or "")
 
-    def _expand_more(self, page, index: int) -> bool:
-        """Open one More menu. True when the click landed (the menu still
-        needs its own read-assert); False on any mechanical failure. The
-        challenge family raises."""
+    def _more_buttons(self, page):
+        """Exact-name More buttons only: the click resolves in the same
+        query space as the match (is_exact_more_name), never as an ordinal
+        into a differently-ordered list. A Following button adjacent to
+        More can therefore never be clicked as the expansion target."""
+        return page.get_by_role("button", name="More", exact=True)
+
+    def _expand_more(self, page, pos: int) -> bool:
+        """Open one More menu by exact accessible name. True when the click
+        landed (the menu still needs its own read-assert); False on any
+        mechanical failure. The challenge family raises."""
         try:
-            page.get_by_role("button").nth(index).click(timeout=10000)
+            self._more_buttons(page).nth(pos).click(timeout=10000)
             page.wait_for_timeout(1500)
         except InviteStop:
             raise
@@ -1134,6 +1185,62 @@ class PlaywrightDriver(InviteDriver):
         if stop is not None:
             raise stop
         return True
+
+    def _cancel_destructive_dialog(self, page, slug: str, tag: str) -> str | None:
+        """Guard rail: the instant an Unfollow/Remove/Report/Block/Withdraw
+        confirmation is open, press its Cancel (else Close) immediately,
+        screenshot both states, and report DESTRUCTIVE_AVOIDED so the run
+        skips the profile. A primary dialog button is NEVER pressed here -
+        the only dialog that ever gets a primary press is the verified
+        invite-Send dialog in _send_bare_from_dialog. Returns the outcome,
+        or None when no destructive dialog is open. Mechanical failures
+        fall back to Escape and still avoid; the challenge family raises."""
+        try:
+            dialog = page.get_by_role("dialog").first
+            if dialog.count() == 0:
+                return None
+            text = dialog.inner_text(timeout=5000)
+        except InviteStop:
+            raise
+        except Exception:
+            return None
+        hint = destructive_hint(text)
+        if hint is None:
+            return None
+        self._capture(page, slug, f"{tag}_destructive", ok=False,
+                      read={"hint": hint, "dialog": scrub(str(text or ""))[:500]})
+        try:
+            stop = self._page_state(page)
+            if stop is not None:
+                raise stop
+            pressed = False
+            for label in ("Cancel", "Close"):
+                try:
+                    btn = dialog.get_by_role("button", name=label, exact=True).first
+                    if btn.count() > 0:
+                        btn.click(timeout=10000)
+                        page.wait_for_timeout(1500)
+                        pressed = True
+                        break
+                except InviteStop:
+                    raise
+                except Exception:
+                    continue
+            if not pressed:
+                self._escape(page)
+        except InviteStop:
+            raise
+        except Exception:
+            try:
+                self._escape(page)
+            except Exception:
+                pass
+        try:
+            gone = page.get_by_role("dialog").first.count() == 0
+        except Exception:
+            gone = False
+        self._capture(page, slug, f"{tag}_cancelled", ok=gone)
+        return DESTRUCTIVE_AVOIDED
 
     def _read_menu(self, page) -> list:
         """Menu item names, or [] when the read itself fails. Callers assert
@@ -1163,14 +1270,21 @@ class PlaywrightDriver(InviteDriver):
         clicked_any = False
         if obstruction is None:
             obstruction = {"sightings": 0}
-        for pos, index in enumerate(more_indices[:3]):
+        # Attempt budget only: the scan's loose More indices are NOT clicked
+        # (their button-role ordinals live in a different index space, which
+        # mis-clicked Following on 2026-11-04). Each attempt expands the
+        # pos-th exact-name More instead.
+        for pos in range(min(len(more_indices), 3)):
             # Timed lightboxes pop mid-flow: re-verify the page is clear
             # before every expand, sharing the page's reappear counter.
             if not self._dismiss_overlay(page, slug, obstruction):
                 return OVERLAY_BLOCKED
-            if not self._expand_more(page, index):
+            if not self._expand_more(page, pos):
                 continue
             tried_any = True
+            avoided = self._cancel_destructive_dialog(page, slug, f"more{pos}")
+            if avoided is not None:
+                return avoided
             menu_names = self._read_menu(page)
             entry_name = pick_invite_entry(menu_names, name, bare_ok=True)
             if entry_name is None:
@@ -1180,7 +1294,10 @@ class PlaywrightDriver(InviteDriver):
                               read={"menu_names": menu_names,
                                     "menu_html": self._menu_html(page)})
                 self._escape(page)
-                if self._expand_more(page, index):
+                if self._expand_more(page, pos):
+                    avoided = self._cancel_destructive_dialog(page, slug, f"more{pos}re")
+                    if avoided is not None:
+                        return avoided
                     menu_names = self._read_menu(page)
                     entry_name = pick_invite_entry(menu_names, name, bare_ok=True)
             if entry_name is None:
@@ -1199,7 +1316,7 @@ class PlaywrightDriver(InviteDriver):
                 return outcome
             # The one allowed fallback: keyboard sequencing on the same More.
             outcome = self._keyboard_press_entry(
-                page, index, entry_name, candidate, note, slug, f"more{pos}kb",
+                page, pos, entry_name, candidate, note, slug, f"more{pos}kb",
             )
             if outcome is not None:
                 return outcome
@@ -1661,6 +1778,7 @@ def run_queue(
                     MENU_MISSED: "menu never verified (re-expanded once)",
                     DIALOG_MISSED: "invite dialog never verified (re-pressed once)",
                     OVERLAY_BLOCKED: "overlay dialog would not dismiss",
+                    DESTRUCTIVE_AVOIDED: "destructive dialog avoided (cancelled at once, never confirmed)",
                 }[outcome]
                 record = {
                     "ts": timestamp, "profile": key, "name": candidate.get("name"),
