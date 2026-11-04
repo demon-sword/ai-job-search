@@ -59,7 +59,7 @@ TRACKER_HEADER = (
 
 CADENCE_DAYS = 14
 SHORTLIST_FLOOR = 60  # Good Fit and up lands on the tracker; the rest is artifact-only
-CANDIDATE_YOE = 3  # ~3 yrs production AI engineering per the candidate profile
+CANDIDATE_YOE = 4  # 4+ yrs production AI engineering per the candidate profile
 
 # ---------------------------------------------------------------------------
 # 1. Discovery queries (shapes lifted from the prior sweep reports)
@@ -375,7 +375,7 @@ def triage(posting):
     strengths = [p for p in CORE_PHRASES if p in text][:3]
     gaps = []
     if scores["experience"] <= 40:
-        gaps.append("yoe bar above ~3 yrs or senior-tilted title")
+        gaps.append("yoe bar above ~4 yrs or senior-tilted title")
     if any(mark in text for mark in SERVICES_MARKS):
         gaps.append("services/consulting tilt")
     if any(mark in text for mark in GRIND_MARKS):

@@ -134,6 +134,14 @@ class ScoringDeterminism(unittest.TestCase):
                        description="Lead a team of 8. 8+ years. Machine learning.")
         self.assertLessEqual(triage(lead)["scores"]["experience"], 40)
 
+    def test_four_year_bar_full_fit_six_year_bar_not(self):
+        four = posting(description="AI engineer, 4+ years production backend. "
+                                  "Python, FastAPI, AWS.")
+        six = posting(description="AI engineer, 6+ years production backend. "
+                                 "Python, FastAPI, AWS.")
+        self.assertEqual(triage(four)["scores"]["experience"], 85)
+        self.assertLess(triage(six)["scores"]["experience"], 85)
+
     def test_relocation_fail_kept_out_of_shortlist(self):
         far = posting(location="Bengaluru (onsite)",
                       description="Great agentic role. Must relocate to Bengaluru.")
