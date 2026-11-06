@@ -53,6 +53,7 @@ from tools.linkedin_connect import (
     check_note,
     classify_interstitial,
     normalize_button_name,
+    is_first_degree_text,
     pick_invite_entry,
     scan_entry_controls,
     verify_dialog_target,
@@ -1204,6 +1205,40 @@ class YogiFollowStateCapture(unittest.TestCase):
         self.assertIsNone(destructive_hint(None))
 
 
+class FirstDegreeDetect(unittest.TestCase):
+    """Regression for the 2026-11-06 evening wall: 1st-degree pages carry
+    no Connect control, so the More path burns misses against them
+    forever. A 1st-degree badge with no verified entry must record
+    already-connected instead of menu_missed."""
+
+    def test_first_degree_badge_detected(self):
+        self.assertTrue(is_first_degree_text("Shhadi Masarwa\n· 1st\nCo-Founder"))
+        self.assertTrue(is_first_degree_text("Harshita Joshi She/Her · 1st"))
+
+    def test_other_degrees_and_prose_are_not_first(self):
+        self.assertFalse(is_first_degree_text("Yogi Rajpal He/Him · 2nd"))
+        self.assertFalse(is_first_degree_text("Pooja Sharma · 2nd"))
+        self.assertFalse(is_first_degree_text("celebrating 21st birthday"))
+        self.assertFalse(is_first_degree_text(""))
+        self.assertFalse(is_first_degree_text(None))
+
+    def _flow(self, page):
+        case = StepVerify("test_menu_miss_twice_returns_menu_missed")
+        return case.flow(page)
+
+    def test_verified_no_entry_first_degree_records_connected(self):
+        page = StepVerify.FakePage(StepVerify.CHROME,
+                                   body_text="Shhadi Masarwa · 1st Co-Founder Message")
+        result, _ = self._flow(page)
+        self.assertEqual(result, "already_connected")
+
+    def test_verified_no_entry_second_degree_still_misses(self):
+        page = StepVerify.FakePage(StepVerify.CHROME,
+                                   body_text="Yogi Rajpal He/Him · 2nd Message")
+        result, _ = self._flow(page)
+        self.assertEqual(result, MENU_MISSED)
+
+
 class DestructiveAvoidedRun(BotCase):
     def test_destructive_skip_avoids_state_change_and_consumes_no_cap(self):
         summary = self.run_live([cand("a")], script=[DESTRUCTIVE_AVOIDED])
@@ -1602,9 +1637,10 @@ class StepVerify(unittest.TestCase):
         BOX = {"x": 10.0, "y": 20.0, "width": 100.0, "height": 30.0}
         CENTER = (60.0, 35.0)
 
-        def __init__(self, reads, mouse_fail_clicks=0, overlays=None):
+        def __init__(self, reads, mouse_fail_clicks=0, overlays=None, body_text=""):
             self.reads = list(reads)
             self.overlays = list(overlays or [])
+            self.body_text = body_text
             self.expands = 0
             self.escapes = 0
             self.keys = []
@@ -1649,6 +1685,8 @@ class StepVerify(unittest.TestCase):
                 if len(self.overlays) > 1:
                     return self.overlays.pop(0)
                 return self.overlays[0] if self.overlays else []
+            if "firstDegreeRead" in script:
+                return self.body_text
             if len(self.reads) > 1:
                 return self.reads.pop(0)
             return self.reads[0]

@@ -175,6 +175,29 @@ def is_exact_more_name(raw: str) -> bool:
     return re.sub(r"\s+", " ", str(raw or "")).strip().lower() == "more"
 
 
+# A 1st-degree profile carries no Connect control, so the More path can
+# only burn misses against it. The degree badge ("Name · 1st") is the
+# ground truth: Message alone is NOT enough (a 2nd-degree follow-state
+# page showed Message yet still invited, 2026-11-04), and prose like
+# "21st" never matches the middot badge form.
+_FIRST_DEGREE_RE = re.compile(r"·\s*1st\b")
+
+
+def is_first_degree_text(text: str) -> bool:
+    """True when page text shows the 1st-degree badge form."""
+    have = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not have:
+        return False
+    return _FIRST_DEGREE_RE.search(have) is not None
+
+
+# Body-text read for the degree check. The marker lets test fakes serve
+# body text for this read while menu reads keep serving menu items.
+FIRST_DEGREE_READ_JS = (
+    "() => (document.body ? document.body.innerText : '') /* firstDegreeRead */"
+)
+
+
 _DESTRUCTIVE_HINTS = ("unfollow", "remove connection", "report", "block", "withdraw")
 
 
@@ -1251,6 +1274,16 @@ class PlaywrightDriver(InviteDriver):
         except Exception:
             return []
 
+    def _profile_is_first_degree(self, page) -> bool:
+        """True when the open profile shows the 1st-degree badge: no Connect
+        control can exist there, so the profile is already connected.
+        Fail-open (False) on any read failure - a blind read must fall
+        through to the existing miss path, never invent connectedness."""
+        try:
+            return is_first_degree_text(page.evaluate(FIRST_DEGREE_READ_JS))
+        except Exception:
+            return False
+
     def _more_connect_flow(self, page, more_indices: list, candidate: dict, note: str | None,
                              obstruction: dict | None = None):
         """Follow-entry invite path over up to three More buttons. Every
@@ -1260,10 +1293,11 @@ class PlaywrightDriver(InviteDriver):
         must verify before sending (ONE bounded re-press, shared helper).
         Every attempt is captured win or lose. Returns an outcome,
         MENU_MISSED when menus never verified, DIALOG_MISSED when an entry
-        was clicked but no dialog ever verified, or None when no More was
-        even openable (caller maps that to FOLLOW_ONLY or UNKNOWN_CONTROLS).
-        Mechanical failures move to the next More; the challenge family
-        still raises."""
+        was clicked but no dialog ever verified, "already_connected" when
+        attempts verified a 1st-degree page (no Connect can exist there),
+        or None when no More was even openable (caller maps that to
+        FOLLOW_ONLY or UNKNOWN_CONTROLS). Mechanical failures move to the
+        next More; the challenge family still raises."""
         slug = self._slug(candidate)
         name = candidate.get("name") or ""
         tried_any = False
@@ -1324,6 +1358,13 @@ class PlaywrightDriver(InviteDriver):
         if clicked_any:
             return DIALOG_MISSED
         if tried_any:
+            # Verified attempts, no usable entry: a 1st-degree page has no
+            # Connect to find, so record it connected instead of burning
+            # misses against it on every future run. run_queue already maps
+            # "already_connected" to the connected status (never invited).
+            if self._profile_is_first_degree(page):
+                self._capture(page, slug, "first_degree", ok=True)
+                return "already_connected"
             return MENU_MISSED
         return None
 
