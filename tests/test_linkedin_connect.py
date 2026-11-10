@@ -2040,19 +2040,29 @@ class DistinctStamps(BotCase):
         return tick, calls
 
     def test_sequential_sends_carry_distinct_write_time_stamps(self):
-        tick, calls = self._clock(6)
+        tick, calls = self._clock(8)
         summary = self.run_live([cand(f"s{i}") for i in range(3)], script=["sent"] * 3,
                                 now_iso=None, clock=tick)
         self.assertEqual(summary["sent"], 3)
         stamps = [r["ts"] for r in summary["decisions"]]
         self.assertEqual(len(set(stamps)), 3, "each send stamped at its own write time")
-        self.assertEqual(len(calls), 4, "one run-start read plus one per decided candidate")
+        self.assertEqual(len(calls), 7, "run-start plus decision and press reads per candidate")
+
+    def test_rows_carry_press_time_not_decision_time(self):
+        tick, _ = self._clock(8)
+        summary = self.run_live([cand("s0"), cand("s1")], script=["sent", "sent"],
+                                now_iso=None, clock=tick)
+        got = [r["ts"] for r in summary["decisions"]]
+        # Tick order: run-start, c0 decision, c0 press, c1 decision, c1 press.
+        self.assertEqual(got, [f"{DAY}T10:00:02+05:30", f"{DAY}T10:00:04+05:30"],
+                         "rows stamp when the outcome is known, after the press flow")
+        self.assertLess(got[0], got[1])
 
     def test_no_row_reuses_a_prior_row_ts(self):
         prior = {"ts": f"{DAY}T09:00:00+05:30", "decision": "send", "result": "sent", "live": True}
         self.audit.parent.mkdir(parents=True, exist_ok=True)
         self.audit.write_text(json.dumps(prior) + "\n", encoding="utf-8")
-        tick, _ = self._clock(6)
+        tick, _ = self._clock(8)
         summary = self.run_live([cand(f"s{i}") for i in range(3)], script=["sent"] * 3,
                                 now_iso=None, clock=tick)
         stamps = [r["ts"] for r in summary["decisions"]]

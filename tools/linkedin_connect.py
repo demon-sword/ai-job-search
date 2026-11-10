@@ -1656,9 +1656,10 @@ def run_queue(
     through), while anything else decided in between resets the count.
 
     Every decision row is stamped at its own write time: the clock (or
-    utcnow_iso) is read fresh for each decided candidate, so sequential
-    sends never share a run-start ts. A fixed now_iso still freezes every
-    stamp - tests use that for determinism, never live runs.
+    utcnow_iso) is read fresh for each decided candidate, and live rows
+    are re-stamped once the press outcome is known, so audit gaps measure
+    true send spacing instead of decision skew. A fixed now_iso still
+    freezes every stamp - tests use that for determinism, never live runs.
     """
     rng = rng or random.Random()
     tick = clock or utcnow_iso
@@ -1795,6 +1796,9 @@ def run_queue(
             try:
                 outcome = driver.send_invite(candidate, note)
             except InviteStop as stop:
+                # Press-time: the stop surfaced after the flow ran, so stamp
+                # the row now, not at the loop-top decision time.
+                timestamp = now_iso or tick()
                 record = {
                     "ts": timestamp, "profile": key, "name": candidate.get("name"),
                     "decision": "stop", "reason": f"{stop.signal}: {stop}", "live": True,
@@ -1803,6 +1807,10 @@ def run_queue(
                 summary["decisions"].append(record)
                 summary["stopped"] = stop.signal
                 raise
+            # Press-time: the outcome is known only after the press flow
+            # ran (sleep included), so stamp every row below now. Audit
+            # gaps then measure true send spacing, never decision skew.
+            timestamp = now_iso or tick()
             prev = (ledger.get("persons", {}) or {}).get(key, {})
             person = {
                 "status": None,
