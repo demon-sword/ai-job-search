@@ -104,18 +104,26 @@ def cand(slug, headline="Tech Recruiter, GenAI hiring", location="Remote", name=
 class FakeDriver(InviteDriver):
     """Scripted driver: each send pops the next outcome, or raises it."""
 
-    def __init__(self, script=None, searches=None, views=None):
+    def __init__(self, script=None, searches=None, views=None, session_states=None):
         self.script = list(script or ["sent"])
         self.searches = list(searches or [])
         self.views = list(views or [])
+        self.session_states = list(session_states) if session_states is not None else None
         self.calls = []
         self.search_calls = []
         self.view_calls = []
+        self.live_checks = 0
         self.started = False
         self.closed = False
 
     def start(self):
         self.started = True
+
+    def session_is_live(self):
+        self.live_checks += 1
+        if self.session_states is None:
+            return True
+        return self.session_states.pop(0) if self.session_states else False
 
     def send_invite(self, candidate, note):
         self.calls.append((dict(candidate), note))
@@ -1238,6 +1246,46 @@ class FirstDegreeDetect(unittest.TestCase):
                                    body_text="Yogi Rajpal He/Him · 2nd Message")
         result, _ = self._flow(page)
         self.assertEqual(result, MENU_MISSED)
+
+
+class LoginGrace(BotCase):
+    """Startup login grace (2026-11-10): the run opens its own window; if
+    the first feed load hits a login wall it prints LOGIN-NEEDED and waits
+    up to the grace for a live session IN THAT SAME WINDOW instead of
+    exit 2. Mid-run walls keep instant exit 2 (unchanged)."""
+
+    def run_with_states(self, states, **over):
+        script = over.pop("script", ["sent"])
+        driver = FakeDriver(script, session_states=list(states))
+        return self.run_live([cand("g")], factory=lambda: driver, **over), driver
+
+    def test_live_at_once_sends_without_waiting(self):
+        sleeps = []
+        summary, driver = self.run_with_states(
+            [True], sleeper=lambda s: sleeps.append(s))
+        self.assertEqual(summary["sent"], 1)
+        self.assertEqual(sleeps, [], "no grace sleep when already live")
+        self.assertIsNone(summary["stopped"])
+
+    def test_walled_then_live_waits_and_proceeds(self):
+        sleeps = []
+        summary, driver = self.run_with_states(
+            [False, False, True], sleeper=lambda s: sleeps.append(s))
+        self.assertEqual(summary["sent"], 1, "proceeds once the window goes live")
+        self.assertEqual(sleeps, [15], "one poll interval waited")
+        self.assertIsNone(summary["stopped"])
+
+    def test_grace_expiry_stops_with_login_needed(self):
+        sleeps = []
+        summary, driver = self.run_with_states(
+            [False, False, False], login_grace_s=0,
+            sleeper=lambda s: sleeps.append(s))
+        self.assertEqual(summary["stopped"], "login_needed")
+        self.assertEqual(summary["sent"], 0)
+        self.assertEqual(driver.calls, [], "no send attempted without a session")
+        self.assertEqual(sleeps, [], "no sleep when grace is already spent")
+        reasons = [r["reason"] for r in self.audit_rows() if r["decision"] == "refuse"]
+        self.assertTrue(any("login" in reason for reason in reasons))
 
 
 class DestructiveAvoidedRun(BotCase):
