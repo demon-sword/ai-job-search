@@ -61,6 +61,19 @@ per-file diff commands.
   geometry. Tests use synthetic page geometry, so they need neither Poppler nor a
   LaTeX toolchain.
 
+- **LinkedIn connect bot control levers** (`tools/linkedin_connect.py`,
+  `tools/LINKEDIN_DISPATCH.md`, `tools/LINKEDIN_LOGIN.md`,
+  `tests/test_linkedin_control.py`) - three operator controls around the
+  sender: on-demand dispatch (documented batch template - quota, queue
+  source, live flag, window deadline - in `LINKEDIN_DISPATCH.md`),
+  single-writer discipline (one live `run`/`discover`/`login`/`status
+  --probe` at a time holds the state-dir `batch.lock`; a second batch
+  refuses, a stale lock from a dead pid is taken over with a notice),
+  and a plain-words `status` (invites today, week count vs cap, one-line
+  last error from the audit tail, session liveness from the cookie mtime
+  with no browser start; `--json` keeps the machine shape, `--probe`
+  spends one explicit live feed load behind the same lock and guard).
+
 ### Fixed
 
 - **LinkedIn connect bot dismisses page-covering overlays** - a promo
@@ -179,6 +192,29 @@ per-file diff commands.
   Existing state files need no migration: Step 2's candidate filter matches a posting to a stored
   entry by URL regardless of that entry's key, so a workspace whose entries predate the helper does
   not see its still-live postings re-presented as new.
+
+- **LinkedIn connect bot state moves out of the repo** - `--state-dir`
+  defaulted to `<repo>/linkedin_connect`, so every disposable worktree
+  resolved to its own empty ledger: caps silently restarted from zero
+  and batches split the invite history. The default is now
+  `~/.linkedin-connect-bot/state/` (stable, shared by all worktrees);
+  `--state-dir` still overrides it. When an unmigrated in-repo ledger
+  exists, the default refuses with the one-time `mv` instead of
+  starting from zero. Pinned by failing-first `test_linkedin_control`
+  cases proving a worktree run resolves state outside the repo.
+
+- **LinkedIn connect bot login hardening** - every live `run` and
+  `discover` launched a persistent Chromium on the same profile with no
+  mutual exclusion, and nothing stopped a batch while the `login`
+  window was open: concurrent profile holders fight over the cookie
+  store, fingerprints shift, and a minutes-old login dies overnight.
+  Every automated browser load now passes one guard: the single-writer
+  lock, no load while the `login.open` marker is up, and a cookie-mtime
+  baseline that refuses when the profile was touched outside the tool
+  (re-run the one-window ceremony in `tools/LINKEDIN_LOGIN.md` to
+  re-verify). `login` itself refuses while a batch holds the lock.
+  Pinned by guard regression tests plus the ceremony/keep-alive doc.
+
 ## [1.7.1] - 2026-09-06
 
 ### Added

@@ -662,7 +662,8 @@ class StatusAndPlan(BotCase):
         path = self.state / "ledger.json"
         save_ledger(path, self.ledger)
         proc = subprocess.run(
-            [sys.executable, str(TOOL), "status", "--state-dir", str(self.state)],
+            [sys.executable, str(TOOL), "status", "--json",
+             "--state-dir", str(self.state)],
             capture_output=True, text=True,
         )
         self.assertEqual(proc.returncode, 0, proc.stderr)

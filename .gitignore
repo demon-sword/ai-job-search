@@ -111,10 +111,12 @@ upskill/*.md
 # **/-prefixed job_scraper/upskill rules above.
 company_research/*.json
 
-# LinkedIn connect bot state (tools/linkedin_connect.py --state-dir default).
-# The ledger and audit log name real people the operator contacted, so they
-# are personal data and stay on the local machine. The login profile lives
-# outside the repo entirely (~/.linkedin-connect-bot/).
+# Legacy LinkedIn connect bot state: the --state-dir default moved out of the
+# repo to ~/.linkedin-connect-bot/state/, but an unmigrated in-repo ledger
+# must stay untracked all the same. The ledger and audit log name real
+# people the operator contacted, so they are personal data and stay on the
+# local machine. The login profile lives outside the repo entirely
+# (~/.linkedin-connect-bot/).
 linkedin_connect/
 
 # Agent skills: track the source, ignore only deps and logs.

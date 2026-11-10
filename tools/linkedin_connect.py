@@ -13,9 +13,11 @@ scores each one against an explicit, configurable targeting file
 matches - at most HARD_DAILY_CAP per day, paced with jitter, inside a daily
 window, with every decision appended to a local audit log.
 
-Safety rails (all enforced in code, all covered by tests/test_linkedin_connect.py):
+Safety rails (all enforced in code, all covered by tests/test_linkedin_connect.py
+and tests/test_linkedin_control.py):
 1. Hard daily cap of 20 invites, counted from a durable local ledger
-   (`linkedin_connect/ledger.json`) that survives restarts. `--max-per-day`
+   (`~/.linkedin-connect-bot/state/ledger.json`, out of the repo so every
+   worktree shares one ledger) that survives restarts. `--max-per-day`
    can only lower the cap, never raise it.
 2. Dry-run default. Without `--live` the bot prints exactly what it WOULD
    send and sends nothing: no browser starts, the ledger is untouched.
@@ -24,8 +26,11 @@ Safety rails (all enforced in code, all covered by tests/test_linkedin_connect.p
    unexpected LinkedIn UI state.
 4. Human-like pacing: a jittered sleep between invites, and sending is
    refused outright outside the configured daily window.
-5. Append-only audit log (`linkedin_connect/audit.jsonl`): who, why they
-   matched, timestamp, result. Never rewritten, only appended.
+5. Append-only audit log (`~/.linkedin-connect-bot/state/audit.jsonl`):
+   who, why they matched, timestamp, result. Never rewritten, only
+   appended. One batch at a time holds the state-dir lock; automated
+   loads refuse while the login window is open or the profile was
+   touched outside the tool.
 6. No credentials or session tokens anywhere in the repo, logs, or
    artifacts. Login is a persistent local browser profile the operator
    creates once by hand (`login` subcommand); secrets never enter this tool.
@@ -65,15 +70,37 @@ import random
 import re
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TARGETS = ROOT / "tools" / "linkedin_connect_targets.json"
-DEFAULT_STATE_DIR = ROOT / "linkedin_connect"
+# Dispatch lives outside the repo on purpose: disposable worktrees must never
+# reset caps or split the ledger, so the default state dir is a stable
+# absolute path under the operator's home. --state-dir still overrides it.
+DEFAULT_STATE_DIR = Path.home() / ".linkedin-connect-bot" / "state"
+# Pre-lever state lived in the repo; resolve_state_dir() refuses a quiet
+# default while an unmigrated ledger sits here, so caps can never silently
+# restart from zero.
+LEGACY_STATE_DIR = ROOT / "linkedin_connect"
+DEFAULT_PROFILE_DIR = Path.home() / ".linkedin-connect-bot" / "profile"
 LEDGER_NAME = "ledger.json"
 AUDIT_NAME = "audit.jsonl"
+# Single-writer discipline: one batch at a time holds this lock file in the
+# state dir. Chromium's own profile lock is the backstop, this is the guard.
+LOCK_NAME = "batch.lock"
+# One-window login ceremony: `login` writes this marker while its browser
+# window is open; automated loads refuse until it is gone.
+LOGIN_MARKER_NAME = "login.open"
+# Login-stability baseline: cookie mtime noted after every guarded load. A
+# mismatch on the next load means something outside this tool touched the
+# live profile, and the load is refused instead of burning the session.
+PROFILE_SENTINEL_NAME = "profile_sentinel.json"
+# Session liveness is a cheap heuristic, never a verdict: cookies touched
+# within this window read "live", older reads "stale".
+SESSION_STALE_DAYS = 7
 
 HARD_DAILY_CAP = 20
 HARD_WEEKLY_CAP = 90
@@ -719,6 +746,196 @@ def effective_cap(max_per_day: int) -> int:
     return min(max_per_day, HARD_DAILY_CAP)
 
 
+def default_state_dir() -> Path:
+    """Stable absolute state home, resolved live so tests can point HOME at
+    scratch. Never under the repo: any worktree resolves to the same dir."""
+    return Path.home() / ".linkedin-connect-bot" / "state"
+
+
+def resolve_state_dir(explicit: Path | None = None) -> Path:
+    """On-demand dispatch root. An explicit --state-dir always wins;
+    otherwise the out-of-repo default keeps every worktree on one ledger.
+    Refuses (rather than silently restarting caps from zero) while a legacy
+    in-repo ledger exists that was never migrated."""
+    if explicit is not None:
+        return Path(explicit)
+    if not (DEFAULT_STATE_DIR / LEDGER_NAME).is_file() and (
+        LEGACY_STATE_DIR / LEDGER_NAME
+    ).is_file():
+        sys.exit(
+            f"refused: invite history lives in the legacy in-repo dir "
+            f"{LEGACY_STATE_DIR / LEDGER_NAME} - move it once, then re-run: "
+            f"mkdir -p {DEFAULT_STATE_DIR} && "
+            f"mv {LEGACY_STATE_DIR / LEDGER_NAME} {DEFAULT_STATE_DIR / LEDGER_NAME} "
+            f"(and audit.jsonl / discovery_cache.json alongside)"
+        )
+    return DEFAULT_STATE_DIR
+
+
+class BatchLocked(Exception):
+    """Another batch holds the state-dir lock: one batch at a time."""
+
+
+class ProfileLoadRefused(Exception):
+    """An automated browser load was refused to protect the login session."""
+
+
+def _read_lock_holder(lock_path: Path) -> dict | None:
+    try:
+        data = json.loads(lock_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _pid_alive(pid) -> bool:
+    try:
+        pid = int(pid)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+class BatchLock:
+    """Hold on the state-dir lock; release it when the batch is done."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+
+    def release(self) -> None:
+        self._path.unlink(missing_ok=True)
+
+
+def acquire_batch_lock(state_dir: Path, command: str) -> BatchLock:
+    """Take the single-writer lock, or raise BatchLocked. A lock whose pid is
+    dead is stale (crashed batch) and is taken over with a stderr notice."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = state_dir / LOCK_NAME
+    record = json.dumps({"pid": os.getpid(), "cmd": command, "started": utcnow_iso()})
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        holder = _read_lock_holder(lock_path)
+        if holder is not None and _pid_alive(holder.get("pid")):
+            raise BatchLocked(
+                f"another {holder.get('cmd') or 'batch'} batch holds the lock "
+                f"(pid {holder.get('pid')}, since {holder.get('started') or 'unknown'}) - "
+                f"one batch at a time; wait for it to finish"
+            )
+        lock_path.write_text(record, encoding="utf-8")
+        print(f"took over a stale batch lock ({holder})", file=sys.stderr)
+        return BatchLock(lock_path)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(record)
+    return BatchLock(lock_path)
+
+
+def _cookies_file(profile_dir: Path) -> Path | None:
+    for rel in ("Network/Cookies", "Cookies", "Default/Network/Cookies"):
+        candidate = profile_dir / rel
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def cookies_mtime(profile_dir: Path) -> float | None:
+    found = _cookies_file(profile_dir)
+    return found.stat().st_mtime if found is not None else None
+
+
+def check_profile_load(state_dir: Path, profile_dir: Path) -> str | None:
+    """Guard every automated browser load. Returns a refusal reason, or None
+    when the load may proceed. Refuses while the one-window login ceremony
+    is open, when the profile has no cookie store, and when the cookies
+    changed outside this tool since the last guarded load (a second browser
+    on the same profile burns the session - that is the overnight killer)."""
+    marker = state_dir / LOGIN_MARKER_NAME
+    if marker.exists():
+        holder = _read_lock_holder(marker)
+        who = f" (pid {holder.get('pid')})" if holder and holder.get("pid") else ""
+        return (
+            f"a login window is still open{who} - finish the one-window login "
+            f"ceremony first; automated loads stay out until {LOGIN_MARKER_NAME} is gone"
+        )
+    sentinel_path = state_dir / PROFILE_SENTINEL_NAME
+    if not sentinel_path.is_file():
+        return None  # first guarded load bootstraps the baseline
+    current = cookies_mtime(profile_dir)
+    if current is None:
+        return (
+            "the live profile has no cookie store - run the login ceremony "
+            "(tools/linkedin_connect.py login) before any batch"
+        )
+    try:
+        noted = json.loads(sentinel_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None  # corrupt baseline heals itself on the next noted load
+    if not isinstance(noted, dict) or noted.get("cookies_mtime") != current:
+        return (
+            "the profile cookies changed outside this tool since the last "
+            "guarded load - another browser may be holding the live profile; "
+            "re-run the login ceremony to re-verify before any batch"
+        )
+    return None
+
+
+def note_guarded_load(state_dir: Path, profile_dir: Path, by: str) -> None:
+    """Record the cookie baseline after a guarded load (or login)."""
+    state_dir.mkdir(parents=True, exist_ok=True)
+    sentinel = {
+        "cookies_mtime": cookies_mtime(profile_dir),
+        "noted_ts": utcnow_iso(),
+        "by": by,
+    }
+    (state_dir / PROFILE_SENTINEL_NAME).write_text(
+        json.dumps(sentinel, indent=2), encoding="utf-8"
+    )
+
+
+class GuardedBrowserLoad:
+    """One batch at a time, no loads during the login window, baseline noted.
+
+    Raises BatchLocked when another batch holds the state-dir lock and
+    ProfileLoadRefused when the login guard says no. The cookie baseline is
+    noted on the way out, success or safety-stop alike - the browser loaded,
+    so the baseline moved.
+    """
+
+    def __init__(self, state_dir: Path, profile_dir: Path, command: str) -> None:
+        self._state_dir = state_dir
+        self._profile_dir = profile_dir
+        self._command = command
+        self._lock: BatchLock | None = None
+
+    def __enter__(self) -> "GuardedBrowserLoad":
+        self._lock = acquire_batch_lock(self._state_dir, self._command)
+        reason = check_profile_load(self._state_dir, self._profile_dir)
+        if reason is not None:
+            self._lock.release()
+            self._lock = None
+            raise ProfileLoadRefused(reason)
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        assert self._lock is not None
+        try:
+            note_guarded_load(self._state_dir, self._profile_dir, self._command)
+        finally:
+            self._lock.release()
+            self._lock = None
+        return False
+
+
 def check_note(note: str | None) -> str | None:
     if note is None:
         return None
@@ -784,6 +1001,21 @@ class PlaywrightDriver(InviteDriver):
         except Exception:
             body = ""
         return classify_interstitial(page.url, page.title(), body or "")
+
+    def check_session(self) -> InviteStop | None:
+        """One live probe: load the feed and classify it. Returns the stop
+        signal when the session is challenged, else None. Read-only: no
+        invite, no queue write."""
+        page = self._ctx.new_page()
+        try:
+            try:
+                page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded", timeout=20000)
+                page.wait_for_timeout(2500)
+            except Exception as exc:
+                raise UnexpectedUI(f"probe page did not load: {exc}") from exc
+            return self._page_state(page)
+        finally:
+            page.close()
 
     def send_invite(self, candidate: dict, note: str | None) -> str:
         page = self._ctx.new_page()
@@ -2137,6 +2369,7 @@ def load_candidates(path: Path) -> list[dict]:
 
 
 def cmd_discover(args) -> int:
+    state_dir = resolve_state_dir(args.state_dir)
     cfg = load_targets(args.targets)
     defaults = discovery_defaults(cfg)
     max_searches = args.max_searches if args.max_searches is not None else defaults["max_searches"]
@@ -2160,25 +2393,34 @@ def cmd_discover(args) -> int:
     queries = discovery_queries(cfg)
     if not queries:
         sys.exit("targets file: discovery has no role_seeds to search from")
-    ledger_path = args.state_dir / LEDGER_NAME
-    cache_path = args.state_dir / CACHE_NAME
-    audit_path = args.state_dir / AUDIT_NAME
+    ledger_path = state_dir / LEDGER_NAME
+    cache_path = state_dir / CACHE_NAME
+    audit_path = state_dir / AUDIT_NAME
     ledger = load_ledger(ledger_path)
     cache = load_cache(cache_path)
     day = today_str()
 
     def factory():
         return PlaywrightDriver(args.profile_dir, places=cfg.get("location_allow", []),
-                                capture_dir=args.state_dir / "diag_run")
+                                capture_dir=state_dir / "diag_run")
 
-    try:
-        summary = run_discover(
+    def execute():
+        return run_discover(
             queries, cfg, ledger, cache, audit_path, live=args.live, day=day,
             window=args.window, max_searches=max_searches, max_pages=max_pages,
             max_profile_views=max_views, max_queued=max_queued,
             search_min_delay=search_min, search_max_delay=search_max,
             driver_factory=factory,
         )
+
+    try:
+        if args.live:
+            with GuardedBrowserLoad(state_dir, args.profile_dir, "discover"):
+                summary = execute()
+        else:
+            summary = execute()
+    except (BatchLocked, ProfileLoadRefused) as exc:
+        sys.exit(f"refused: {exc}")
     except InviteStop as stop:
         save_ledger(ledger_path, ledger)
         save_cache(cache_path, cache)
@@ -2211,9 +2453,10 @@ def cmd_discover(args) -> int:
 
 
 def cmd_plan(args) -> int:
+    state_dir = resolve_state_dir(args.state_dir)
     cfg = load_targets(args.targets)
     candidates = load_candidates(args.candidates)
-    ledger = load_ledger(args.state_dir / LEDGER_NAME)
+    ledger = load_ledger(state_dir / LEDGER_NAME)
     min_score = float(cfg.get("min_score", 0))
     rows = []
     for candidate in candidates:
@@ -2240,6 +2483,7 @@ def cmd_plan(args) -> int:
 
 
 def cmd_run(args) -> int:
+    state_dir = resolve_state_dir(args.state_dir)
     try:
         cap = effective_cap(args.max_per_day)
     except ValueError as exc:
@@ -2255,8 +2499,8 @@ def cmd_run(args) -> int:
     if args.min_delay < 0 or args.max_delay < args.min_delay:
         sys.exit(f"bad delay window [{args.min_delay}, {args.max_delay}]")
     cfg = load_targets(args.targets)
-    ledger_path = args.state_dir / LEDGER_NAME
-    audit_path = args.state_dir / AUDIT_NAME
+    ledger_path = state_dir / LEDGER_NAME
+    audit_path = state_dir / AUDIT_NAME
     ledger = load_ledger(ledger_path)
     if args.from_ledger:
         candidates = []
@@ -2280,14 +2524,23 @@ def cmd_run(args) -> int:
     day = today_str()
 
     def factory():
-        return PlaywrightDriver(args.profile_dir, capture_dir=args.state_dir / "diag_run")
+        return PlaywrightDriver(args.profile_dir, capture_dir=state_dir / "diag_run")
 
-    try:
-        summary = run_queue(
+    def execute():
+        return run_queue(
             candidates, cfg, ledger, audit_path, live=args.live, cap=cap, day=day,
             window=args.window, note=note, limit=args.limit,
             min_delay=args.min_delay, max_delay=args.max_delay, driver_factory=factory,
         )
+
+    try:
+        if args.live:
+            with GuardedBrowserLoad(state_dir, args.profile_dir, "run"):
+                summary = execute()
+        else:
+            summary = execute()
+    except (BatchLocked, ProfileLoadRefused) as exc:
+        sys.exit(f"refused: {exc}")
     except InviteStop as stop:
         save_ledger(ledger_path, ledger)
         print(f"BOT STOPPED - {stop.loud}: {stop}", file=sys.stderr)
@@ -2320,8 +2573,67 @@ def cmd_run(args) -> int:
     return 0
 
 
+def last_error_line(state_dir: Path) -> str | None:
+    """Most recent stop/refusal audit row, flattened to one line. The counts
+    are stdlib-only and never start a browser; so is this."""
+    audit_path = state_dir / AUDIT_NAME
+    if not audit_path.is_file():
+        return None
+    try:
+        lines = audit_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and row.get("decision") in ("stop", "refuse"):
+            flat = " ".join(
+                str(row.get(key) or "") for key in ("ts", "decision", "reason")
+            )
+            return " ".join(flat.split())
+    return None
+
+
+def _human_age(seconds: float) -> str:
+    if seconds < 0:
+        seconds = 0
+    if seconds < 120:
+        return "just now"
+    minutes = int(seconds // 60)
+    if minutes < 120:
+        return f"{minutes}m"
+    hours = int(minutes // 60)
+    if hours < 48:
+        return f"{hours}h"
+    return f"{hours // 24}d"
+
+
+def session_state(profile_dir: Path) -> str:
+    """Cheap liveness read: the cookie store's mtime, never a page load.
+
+    A heuristic, not a verdict - cookies can be fresh on a dead session.
+    Anything the tool cannot see from disk says unknown/stale, never live.
+    """
+    if not profile_dir.is_dir():
+        return "unknown (no profile yet - run the login ceremony)"
+    if _cookies_file(profile_dir) is None:
+        return "dead (no cookie store in the profile - run the login ceremony)"
+    age = time.time() - (cookies_mtime(profile_dir) or 0.0)
+    touched = _human_age(age)
+    if age > SESSION_STALE_DAYS * 86400:
+        return f"stale (cookies untouched for {touched} - re-run login if invites fail)"
+    if touched == "just now":
+        return "live (cookies touched just now)"
+    return f"live (cookies touched {touched} ago)"
+
+
 def cmd_status(args) -> int:
-    ledger = load_ledger(args.state_dir / LEDGER_NAME)
+    state_dir = resolve_state_dir(args.state_dir)
+    if args.probe:
+        return cmd_probe(args, state_dir)
+    ledger = load_ledger(state_dir / LEDGER_NAME)
     day = today_str()
     try:
         cap = effective_cap(args.max_per_day)
@@ -2331,52 +2643,113 @@ def cmd_status(args) -> int:
     for person in (ledger.get("persons") or {}).values():
         status = str(person.get("status") or "unknown")
         by_status[status] = by_status.get(status, 0) + 1
-    print(json.dumps({
-        "day": day,
-        "sent_today": sends_today(ledger, day),
-        "cap": cap,
-        "remaining_today": max(0, cap - sends_today(ledger, day)),
-        "sent_last_7d": sends_last_7d(ledger, day),
-        "weekly_cap": HARD_WEEKLY_CAP,
-        "remaining_week": max(0, HARD_WEEKLY_CAP - sends_last_7d(ledger, day)),
-        "persons_by_status": by_status,
-        "ledger": str(args.state_dir / LEDGER_NAME),
-        "audit": str(args.state_dir / AUDIT_NAME),
-    }, indent=2))
+    sent_day = sends_today(ledger, day)
+    sent_week = sends_last_7d(ledger, day)
+    error = last_error_line(state_dir)
+    session = session_state(args.profile_dir)
+    if args.json:
+        print(json.dumps({
+            "day": day,
+            "sent_today": sent_day,
+            "cap": cap,
+            "remaining_today": max(0, cap - sent_day),
+            "sent_last_7d": sent_week,
+            "weekly_cap": HARD_WEEKLY_CAP,
+            "remaining_week": max(0, HARD_WEEKLY_CAP - sent_week),
+            "persons_by_status": by_status,
+            "last_error": error,
+            "session": session,
+            "ledger": str(state_dir / LEDGER_NAME),
+            "audit": str(state_dir / AUDIT_NAME),
+        }, indent=2))
+        return 0
+    print(f"LinkedIn connect bot status ({day})")
+    print(f"State: {state_dir}")
+    print(f"Profile: {args.profile_dir}")
+    print(f"Invites sent today: {sent_day} of {cap} ({max(0, cap - sent_day)} left)")
+    print(f"Invites this week: {sent_week} of {HARD_WEEKLY_CAP} "
+          f"({max(0, HARD_WEEKLY_CAP - sent_week)} left)")
+    print(f"Last error: {error if error else 'none'}")
+    print(f"Session: {session}")
     return 0
 
 
+def cmd_probe(args, state_dir: Path) -> int:
+    """One explicit live page load behind the same lock and guard as every
+    other browser touch. Read-only: no invite, no queue write."""
+    try:
+        with GuardedBrowserLoad(state_dir, args.profile_dir, "probe"):
+            driver = PlaywrightDriver(args.profile_dir,
+                                      capture_dir=state_dir / "diag_run")
+            try:
+                driver.start()
+                try:
+                    stop = driver.check_session()
+                finally:
+                    driver.close()
+            except InviteStop as stop:
+                print(f"probe: {stop.signal}: {stop}", file=sys.stderr)
+                return EXIT_STOPPED
+    except (BatchLocked, ProfileLoadRefused) as exc:
+        sys.exit(f"refused: {exc}")
+    if stop is None:
+        print("probe: signed in - feed loaded, no challenge shown")
+        return 0
+    print(f"probe: {stop.signal}: {stop}", file=sys.stderr)
+    return EXIT_STOPPED
+
+
 def cmd_login(args) -> int:
-    """One-time setup: open a persistent browser for manual login.
+    """One-window ceremony: open a persistent browser for manual login.
 
     The operator signs in by hand inside the opened window (including any
     2FA), then closes it. Session cookies stay in the profile directory -
     this tool never sees, stores, or logs a password or token.
+
+    One window at a time: this command refuses while another batch holds
+    the state-dir lock, and writes the login-open marker so every automated
+    load refuses until the ceremony is done. Full rite in
+    tools/LINKEDIN_LOGIN.md.
     """
+    state_dir = resolve_state_dir(args.state_dir)
     try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        sys.exit("login needs Playwright: pip install playwright && python -m playwright install chromium")
-    args.profile_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Opening LinkedIn login in persistent profile {args.profile_dir}")
-    print("Sign in by hand (2FA included), then close the window. Nothing is recorded by this tool.")
-    with sync_playwright() as pw:
-        ctx = pw.chromium.launch_persistent_context(str(args.profile_dir), headless=False)
-        page = ctx.new_page()
-        page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
+        lock = acquire_batch_lock(state_dir, "login")
+    except BatchLocked as exc:
+        sys.exit(f"refused: {exc} - let that batch finish, then re-run login")
+    marker = state_dir / LOGIN_MARKER_NAME
+    marker.write_text(
+        json.dumps({"pid": os.getpid(), "started": utcnow_iso()}), encoding="utf-8"
+    )
+    try:
         try:
-            input("Press Enter here after you are signed in and have closed the browser... ")
-        except EOFError:
-            pass
-        ctx.close()
-    print(f"Profile ready at {args.profile_dir} - it stays on this machine and is never committed.")
-    return 0
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            sys.exit("login needs Playwright: pip install playwright && python -m playwright install chromium")
+        args.profile_dir.mkdir(parents=True, exist_ok=True)
+        print(f"Opening LinkedIn login in persistent profile {args.profile_dir}")
+        print("Sign in by hand (2FA included), then close the window. Nothing is recorded by this tool.")
+        with sync_playwright() as pw:
+            ctx = pw.chromium.launch_persistent_context(str(args.profile_dir), headless=False)
+            page = ctx.new_page()
+            page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
+            try:
+                input("Press Enter here after you are signed in and have closed the browser... ")
+            except EOFError:
+                pass
+            ctx.close()
+        print(f"Profile ready at {args.profile_dir} - it stays on this machine and is never committed.")
+        return 0
+    finally:
+        marker.unlink(missing_ok=True)
+        note_guarded_load(state_dir, args.profile_dir, "login")
+        lock.release()
 
 
 def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--targets", type=Path, default=DEFAULT_TARGETS)
-    common.add_argument("--state-dir", type=Path, default=DEFAULT_STATE_DIR)
+    common.add_argument("--state-dir", type=Path, default=None,
+                          help="dispatch root; defaults out-of-repo to ~/.linkedin-connect-bot/state")
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0] if __doc__ else "linkedin connect bot")
     sub = ap.add_subparsers(dest="command", required=True)
@@ -2395,8 +2768,7 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--search-min-delay", type=float, default=None)
     discover.add_argument("--search-max-delay", type=float, default=None)
     discover.add_argument("--window", default=DEFAULT_WINDOW, help='daily window "HH:MM-HH:MM" local time')
-    discover.add_argument("--profile-dir", type=Path,
-                          default=Path.home() / ".linkedin-connect-bot" / "profile")
+    discover.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR)
     discover.set_defaults(func=cmd_discover)
 
     run = sub.add_parser("run", parents=[common], help="run the queue (dry-run unless --live)")
@@ -2410,17 +2782,20 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--note-file", type=Path, help="optional invite note file (<=300 chars)")
     run.add_argument("--min-delay", type=float, default=DEFAULT_MIN_DELAY)
     run.add_argument("--max-delay", type=float, default=DEFAULT_MAX_DELAY)
-    run.add_argument("--profile-dir", type=Path,
-                     default=Path.home() / ".linkedin-connect-bot" / "profile")
+    run.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR)
     run.set_defaults(func=cmd_run)
 
-    status = sub.add_parser("status", parents=[common], help="ledger counts and remaining quota")
+    status = sub.add_parser("status", parents=[common],
+                            help="plain-words quota, last error, and session liveness (no browser)")
     status.add_argument("--max-per-day", type=int, default=HARD_DAILY_CAP)
+    status.add_argument("--json", action="store_true", help="machine-readable JSON instead of plain words")
+    status.add_argument("--probe", action="store_true",
+                        help="explicit flag: one live feed load to verify the session (starts a browser)")
+    status.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR)
     status.set_defaults(func=cmd_status)
 
-    login = sub.add_parser("login", parents=[common], help="one-time manual login into the local profile")
-    login.add_argument("--profile-dir", type=Path,
-                       default=Path.home() / ".linkedin-connect-bot" / "profile")
+    login = sub.add_parser("login", parents=[common], help="one-window manual login into the local profile")
+    login.add_argument("--profile-dir", type=Path, default=DEFAULT_PROFILE_DIR)
     login.set_defaults(func=cmd_login)
     return ap
 

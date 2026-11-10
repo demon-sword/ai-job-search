@@ -49,16 +49,19 @@ python3 tools/linkedin_connect.py plan --candidates queue.json
 #    no browser starts, the ledger is untouched. This is the default.
 python3 tools/linkedin_connect.py run --from-ledger
 
-# 5. One-time setup for live sending (needs Playwright, below):
-#    opens a browser; you sign in by hand, then close it.
+# 5. One-window login ceremony (needs Playwright, below):
+#    one browser window, sign in by hand, close it. Full rite in
+#    `tools/LINKEDIN_LOGIN.md`.
 python3 tools/linkedin_connect.py login
 
 # 6. Live. The explicit operator flag; nothing else sends.
+#    Dispatch one batch at a time, on demand - see `tools/LINKEDIN_DISPATCH.md`.
 python3 tools/linkedin_connect.py run --from-ledger --live
 # ...or the hand-collected queue, as before:
 python3 tools/linkedin_connect.py run --candidates queue.json --live
 
-# Quota and history at any time:
+# Quota, last error, and session liveness at any time (plain words,
+# no browser starts; --json for the machine shape):
 python3 tools/linkedin_connect.py status
 ```
 
@@ -71,15 +74,17 @@ discover-queued profiles instead (and composes with `--candidates`).
 
 | Rail | How |
 |------|-----|
-| Hard daily cap of 20 | Counted from `linkedin_connect/ledger.json`, which survives restarts. `--max-per-day` can only lower it; anything above 20 is refused. Discovery queues at most 20 new profiles per day too (`--max-queued`, same ceiling). A pass that would start at or over either cap is refused before any browser starts. |
-| Hard weekly cap of 90 | Rolling 7-day window over the same send history, absolute (no flag raises it). The pass refuses to start at 90 and halts mid-loop when the 90th send lands. `status` reports `sent_last_7d` / `remaining_week`. |
+| Hard daily cap of 20 | Counted from `~/.linkedin-connect-bot/state/ledger.json` (out-of-repo default, so every worktree shares one ledger), which survives restarts. `--max-per-day` can only lower it; anything above 20 is refused. Discovery queues at most 20 new profiles per day too (`--max-queued`, same ceiling). A pass that would start at or over either cap is refused before any browser starts. |
+| Hard weekly cap of 90 | Rolling 7-day window over the same send history, absolute (no flag raises it). The pass refuses to start at 90 and halts mid-loop when the 90th send lands. `status` reports week count vs cap in plain words. |
+| On-demand dispatch, one batch at a time | No schedule fires batches; the operator triggers each one (`tools/LINKEDIN_DISPATCH.md`). A live `run`, `discover`, `login`, or `status --probe` holds the state-dir lock and a second batch refuses until it finishes. |
 | Dry-run default | Without `--live` no browser starts and the ledger is untouched. Discovery dry-run is fully read-only: it scores the cache and writes nothing — no cache, ledger, or audit entries. |
 | Instant full stop, exit 2 | Any login challenge, captcha, verification prompt, rate-limit response, or unexpected UI aborts the run with no retry and a loud stderr report. Discovery applies the same classifier to every search and profile page. Invite entry is scan-then-verify: page-wide control names are partitioned (Connect candidates, Follow flag, More indices) and every click must open a dialog addressing the candidate by name before Send, so a suggested profile's controls can never invite a stranger. |
-| Self-verifying transitions | Before any entry control is touched, a page-covering obstruction — dialog overlay or role-less ad lightbox (fullscreen-fixed scrim with a close control) — is dismissed via Escape then one close/decline click on the exact node, never an accept, with before/after captures; re-checked before every More expand, and an obstruction seen after two clears skips as `overlay_blocked`. A visible top-level Connect (button, link, or ARIA button alike, text-matched so non-`<button>` controls are seen) is always preferred; More → Connect only when none exists or verifies. After expanding More, the menu read must be non-empty and contain the verified entry before clicking (one bounded re-expand + re-read per More); after clicking Connect, the dialog must verify before sending (one bounded re-press, then one keyboard fallback). Every attempt saves a screenshot + DOM snippet under `linkedin_connect/diag_run/` (gitignored), win or lose. Step misses skip as `menu_missed` / `dialog_missed` / `overlay_blocked` without a ledger write (max 3 consecutive, 4th stops loud). |
+| Self-verifying transitions | Before any entry control is touched, a page-covering obstruction — dialog overlay or role-less ad lightbox (fullscreen-fixed scrim with a close control) — is dismissed via Escape then one close/decline click on the exact node, never an accept, with before/after captures; re-checked before every More expand, and an obstruction seen after two clears skips as `overlay_blocked`. A visible top-level Connect (button, link, or ARIA button alike, text-matched so non-`<button>` controls are seen) is always preferred; More → Connect only when none exists or verifies. After expanding More, the menu read must be non-empty and contain the verified entry before clicking (one bounded re-expand + re-read per More); after clicking Connect, the dialog must verify before sending (one bounded re-press, then one keyboard fallback). Every attempt saves a screenshot + DOM snippet under `<state-dir>/diag_run/` (outside the repo), win or lose. Step misses skip as `menu_missed` / `dialog_missed` / `overlay_blocked` without a ledger write (max 3 consecutive, 4th stops loud). |
+| Stable login | Every automated browser load is guarded: no loads while the one-window login ceremony is open, no loads when the profile cookies changed outside the tool since the last guarded load (a second browser on the live profile is the overnight killer). Refusals name the recovery: finish or re-run the ceremony (`tools/LINKEDIN_LOGIN.md`). |
 | Queue order by invitable-confidence | Direct-Connect profiles first, More-overflow second, unknown variants last — scored from cached data only (the `entry` recorded on discovery profile views, prior `follow_only`/`note_required` outcomes), never from extra page visits. Stable within a tier. Hand-supplied `--candidates` files may carry `"entry": "direct" | "more" | "unknown"`. |
 | Human-like pacing + window | Jittered 60–180 s pause between invites (tunable down, never off); jittered 8–20 s pause between discovery fetches; anything outside `--window` (default 09:00–21:00 local) is refused. |
-| Discovery budgets | At most 3 seeded searches, 2 pages each, 5 profile views per run (all tunable down in the targets file). Raw pages are cached in `linkedin_connect/discovery_cache.json` so a re-run re-scores from disk and never re-scrapes. |
-| Append-only audit log | `linkedin_connect/audit.jsonl`: who, why they matched, timestamp, result. Never rewritten. |
+| Discovery budgets | At most 3 seeded searches, 2 pages each, 5 profile views per run (all tunable down in the targets file). Raw pages are cached in `<state-dir>/discovery_cache.json` so a re-run re-scores from disk and never re-scrapes. |
+| Append-only audit log | `<state-dir>/audit.jsonl`: who, why they matched, timestamp, result. Never rewritten. `status` prints the most recent stop/refusal as the one-line `Last error`. |
 | No credentials in repo/logs | There is no `--password`/`--token` flag at all. Login state lives in a persistent browser profile outside the repo (`~/.linkedin-connect-bot/`). A scrubber redacts credential-looking text before it can reach logs. |
 | Dedupe | Ledger statuses `invited / connected / declined / withdrawn` — plus discovery's `queued` — are never re-queued or re-invited, across restarts. Follow-only profiles go through More → Connect (a name-verified `Invite <name> to connect` entry, or a unique bare `Connect` inside the opened menu, wins; bare send); forced-note dialogs skip as `note_required` (a note is never written); step misses skip as `menu_missed` / `dialog_missed` / `unknown_controls` without a ledger write (max 3 consecutive, 4th stops loud). |
 
@@ -91,11 +96,13 @@ python -m playwright install chromium
 python3 tools/linkedin_connect.py login   # sign in by hand once
 ```
 
-The profile directory stays on your machine and is never committed
-(`linkedin_connect/` state is gitignored too). Tune targeting by copying
-`tools/linkedin_connect_targets.json` and passing `--targets` — criteria
-are data, never hardcoded names. An optional invite note (≤300 chars)
-comes from `--note-file`.
+The profile directory (`~/.linkedin-connect-bot/profile/`) and the state
+dir (`~/.linkedin-connect-bot/state/`) stay on your machine and are never
+committed (the legacy in-repo `linkedin_connect/` state is gitignored too).
+Tune targeting by copying `tools/linkedin_connect_targets.json` and passing
+`--targets` — criteria are data, never hardcoded names. An optional invite
+note (≤300 chars) comes from `--note-file`.
 
 Exit codes: `0` ok (including a planned halt at the daily cap),
-`1` usage/state/refused-outside-window, `2` safety stop.
+`1` usage/state/refused (outside window, lock held, login guard, bad flags),
+`2` safety stop.
