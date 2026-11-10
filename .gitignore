@@ -27,6 +27,8 @@ salary_data.json
 **/job_scraper/sweep_auto_state.json
 **/job_scraper/notion_sync.json
 **/job_scraper/*.md
+# Runtime sweep state (local run marker, not personal data).
+job_scraper/sweep_auto_state.json
 *_BehavioralReport.pdf
 linkedin_Profile.pdf
 
@@ -108,6 +110,12 @@ upskill/*.md
 # repo root normally - a plain rooted pattern is correct here, unlike the
 # **/-prefixed job_scraper/upskill rules above.
 company_research/*.json
+
+# LinkedIn connect bot state (tools/linkedin_connect.py --state-dir default).
+# The ledger and audit log name real people the operator contacted, so they
+# are personal data and stay on the local machine. The login profile lives
+# outside the repo entirely (~/.linkedin-connect-bot/).
+linkedin_connect/
 
 # Agent skills: track the source, ignore only deps and logs.
 # (A blanket `.agents/` ignore silently drops the job-search CLI skills from the repo.)
