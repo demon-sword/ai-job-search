@@ -441,6 +441,28 @@ def queue_tier(candidate: dict, ledger: dict) -> int:
 RUN_SKIP_STATUSES = TERMINAL_STATUSES | {FOLLOW_ONLY, NOTE_REQUIRED}
 DISCOVERY_STATUSES = TERMINAL_STATUSES | {"queued", FOLLOW_ONLY, NOTE_REQUIRED}
 MAX_CONSECUTIVE_UNKNOWN = 3
+# Startup login grace: when the run's own window opens logged-out, wait
+# this long (polling this often) for a live session instead of exit 2, so
+# the operator can sign in inside that same window. Mid-run walls keep
+# instant exit 2 - the grace covers startup only.
+LOGIN_GRACE_S = 600
+LOGIN_POLL_S = 15
+
+
+def await_live_session(driver, *, grace_s=LOGIN_GRACE_S, interval_s=LOGIN_POLL_S,
+                       sleeper=None, monotonic=None) -> bool:
+    """Poll driver.session_is_live() until True or the grace expires.
+    True the moment the window goes live; False on expiry. Injectable
+    sleeper/monotonic keep tests instant."""
+    sleep = sleeper or time.sleep
+    now = monotonic or time.monotonic
+    end = now() + grace_s
+    while True:
+        if driver.session_is_live():
+            return True
+        if now() >= end:
+            return False
+        sleep(interval_s)
 
 _INVITE_ENTRY_RE = re.compile(r"^Invite (.+) to connect$", re.IGNORECASE)
 
@@ -951,6 +973,12 @@ class InviteDriver:
     def start(self) -> None:
         raise NotImplementedError
 
+    def session_is_live(self) -> bool:
+        """True when the open window holds a live LinkedIn session
+        (feed loads with no login wall). Used only by the startup login
+        grace, before any send is attempted."""
+        raise NotImplementedError
+
     def send_invite(self, candidate: dict, note: str | None) -> str:
         """Send one invite. Returns "sent", or a terminal outcome such as
         "already_pending" / "already_connected". Raises InviteStop on any
@@ -1016,6 +1044,29 @@ class PlaywrightDriver(InviteDriver):
             return self._page_state(page)
         finally:
             page.close()
+
+    def session_is_live(self) -> bool:
+        """Feed check in the run's own window: True when no login wall.
+        Any mechanical failure reads as not-live (the grace keeps
+        waiting); a wall or challenge simply is not a live session yet -
+        the operator may be solving it inside this same window."""
+        page = self._ctx.new_page()
+        try:
+            try:
+                page.goto("https://www.linkedin.com/feed/", wait_until="domcontentloaded",
+                          timeout=20000)
+                page.wait_for_timeout(2500)
+            except Exception:
+                return False
+            try:
+                return self._page_state(page) is None
+            except Exception:
+                return False
+        finally:
+            try:
+                page.close()
+            except Exception:
+                pass
 
     def send_invite(self, candidate: dict, note: str | None) -> str:
         page = self._ctx.new_page()
@@ -1875,6 +1926,8 @@ def run_queue(
     rng: random.Random | None = None,
     now_iso: str | None = None,
     clock=None,
+    login_grace_s=LOGIN_GRACE_S,
+    login_interval_s=LOGIN_POLL_S,
 ) -> dict:
     """Execute one bot pass. Returns a summary dict; raises InviteStop on a
     safety signal and SystemExit(2) is left to the CLI wrapper.
@@ -1942,6 +1995,30 @@ def run_queue(
             raise ValueError("live run needs a driver factory")
         driver = driver_factory()
         driver.start()
+        # Startup login grace (same window, before any send): a walled
+        # feed prints LOGIN-NEEDED and waits for the operator to sign in
+        # inside this window instead of exiting. Mid-run walls still raise
+        # out of send_invite with instant exit 2 - untouched.
+        if not driver.session_is_live():
+            print("LOGIN-NEEDED - this run's window is logged out: sign in "
+                  f"inside it within {login_grace_s}s and the pass proceeds "
+                  "on its own.", file=sys.stderr)
+            if not await_live_session(driver, grace_s=login_grace_s,
+                                      interval_s=login_interval_s, sleeper=sleeper):
+                timestamp = now_iso or tick()
+                record = {
+                    "ts": timestamp, "decision": "refuse",
+                    "reason": f"login grace expired ({login_grace_s}s) - no live session, nothing sent",
+                    "live": True,
+                }
+                append_audit(audit_path, record)
+                summary["decisions"].append(record)
+                summary["stopped"] = "login_needed"
+                try:
+                    driver.close()
+                except Exception:
+                    pass
+                return summary
 
     # Invitable-confidence order: direct-Connect profiles first, then
     # More-overflow, then unknown variants. The sort is stable, so within a
@@ -2566,6 +2643,10 @@ def cmd_run(args) -> int:
         print(f"BOT STOPPED - {MAX_CONSECUTIVE_UNKNOWN + 1} consecutive profiles with unreadable "
               f"controls; LinkedIn UI may have drifted. Ledger saved, audit holds every skip.",
               file=sys.stderr)
+        return EXIT_STOPPED
+    if summary["stopped"] == "login_needed":
+        print("BOT STOPPED - login grace expired with no live session; "
+              "nothing sent. Ledger saved.", file=sys.stderr)
         return EXIT_STOPPED
     if summary["stopped"] == "outside_window":
         print(f"refused: outside the daily window {args.window} - nothing sent.", file=sys.stderr)
