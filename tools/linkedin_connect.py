@@ -841,7 +841,8 @@ def acquire_batch_lock(state_dir: Path, command: str) -> BatchLock:
 
 
 def _cookies_file(profile_dir: Path) -> Path | None:
-    for rel in ("Network/Cookies", "Cookies", "Default/Network/Cookies"):
+    for rel in ("Network/Cookies", "Cookies", "Default/Network/Cookies",
+                "Default/Cookies"):
         candidate = profile_dir / rel
         if candidate.is_file():
             return candidate
