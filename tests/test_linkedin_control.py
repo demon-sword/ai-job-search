@@ -166,6 +166,34 @@ class LoginGuard(unittest.TestCase):
         mod.note_guarded_load(self.state, self.profile, "run")
         self.assertIsNone(mod.check_profile_load(self.state, self.profile))
 
+    def test_default_cookies_layout_resolves_and_survives_noting(self):
+        """Chromium keeps cookies at Default/Cookies: the lookup must find
+        it, and a noted load must still pass afterwards (otherwise the
+        first bootstrap notes null and every later load refuses)."""
+        from tools import linkedin_connect as mod
+
+        chromium = Path(self._tmp.name) / "chromium-profile"
+        (chromium / "Default").mkdir(parents=True)
+        (chromium / "Default" / "Cookies").write_bytes(b"sqlite")
+        self.assertIsNotNone(mod._cookies_file(chromium))
+        self.assertIsNone(mod.check_profile_load(self.state, chromium))
+        mod.note_guarded_load(self.state, chromium, "run")
+        self.assertIsNone(
+            mod.check_profile_load(self.state, chromium),
+            "sentinel + Default/Cookies must still load (no deadlock)")
+
+    def test_missing_store_with_sentinel_still_refuses(self):
+        """A profile with no cookie store anywhere must still refuse once
+        a baseline exists - the fix must not turn the guard permissive."""
+        from tools import linkedin_connect as mod
+
+        bare = Path(self._tmp.name) / "bare-profile"
+        bare.mkdir()
+        mod.note_guarded_load(self.state, bare, "run")
+        reason = mod.check_profile_load(self.state, bare)
+        self.assertIsNotNone(reason)
+        self.assertIn("cookie", reason.lower())
+
     def test_cli_live_run_refuses_during_the_login_window(self):
         from tools import linkedin_connect as mod
 
