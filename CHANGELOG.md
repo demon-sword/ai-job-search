@@ -76,6 +76,15 @@ per-file diff commands.
 
 ### Fixed
 
+- **LinkedIn invitation outcomes and interruption accounting** - bind
+  controls/receipts to the target profile; recognize direct-Connect success
+  without a modal and require positive modal-Send acknowledgement. Never
+  retry a possibly sending click. Fsynced ledger reservations and immediate
+  results preserve conservative caps, dedupe and pacing through termination.
+  Status exposes interrupted runs and uncertainty; evidence-backed,
+  idempotent `reconcile` backs up canonical records before applying changes.
+  No targeting, discovery-budget or scheduling changes.
+
 - **LinkedIn connect bot dismisses page-covering overlays** - a promo
   scrim was observed swallowing More clicks while menu reads saw only the
   overlay's own buttons. Before any entry control is touched, the driver now
