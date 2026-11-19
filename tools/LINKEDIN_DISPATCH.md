@@ -21,8 +21,8 @@ refuses the default and prints the exact `mv` until you move
 
 ## Batch template (fill in, then run)
 
-- **quota for this batch**: at most N invites (`--limit N`, still under
-  the 20/day and 90/week hard caps from the durable ledger).
+- **quota for this batch**: at most N processed candidates (`--limit N`),
+  under the 20/day and 90/week caps including unresolved reservations.
 - **queue source**: `--from-ledger` (discover-queued) and/or
   `--candidates queue.json` (hand-collected).
 - **live flag**: dry-run first (no `--live`: no browser, nothing written
@@ -52,3 +52,44 @@ the tool - see `tools/LINKEDIN_LOGIN.md`, never force it.
 `status --probe` is the only sanctioned live session check, and only
 with the explicit flag: one feed load behind the same lock and guard,
 read-only.
+
+## Interrupted or uncertain invitations
+
+`ledger.json` is the sole accounting authority. It is atomically replaced
+and fsynced before possible side effects and after each result. The audit
+is append-only history, never replayed as if every old `sent` label were
+platform proof. Status reports confirmed sends separately from reserved
+quota and identifies interrupted runs. Cookie recency is a heuristic,
+not a signed-in verdict.
+
+An interrupted `attempting` or an `uncertain` outcome consumes quota and
+blocks live runs and discovery. Never delete the ledger, reservation,
+sentinel or lock to resume. Do not repeat Connect/Send to test an outcome.
+Inspect preserved target-specific evidence or LinkedIn's Sent invitations
+read-only. A screenshot still showing Connect alone is not affirmative
+proof of rejection.
+
+Use an operator-reviewed JSON manifest with a stable `id`, non-empty
+`reason`, and `records`. Each record has `candidate` (profile_url/name),
+`outcome` (`sent`, `uncertain`, `connected`, or `not_sent`), a timezone-aware
+`ts`, and `evidence` (paths to preserved files). `not_sent` is an explicit
+affirmative resolution of an unresolved attempt, not a timeout fallback;
+it permits a later separately authorized retry. Confirmed send history
+cannot be erased. An optional `source_status: interrupted` records recovery
+of a known interrupted run.
+
+```sh
+python3 tools/linkedin_connect.py reconcile --manifest incident.json
+python3 tools/linkedin_connect.py reconcile --manifest incident.json --apply
+python3 tools/linkedin_connect.py status --json
+```
+
+Preview is read-only and never opens a browser. Apply holds the same lock,
+backs up ledger/audit/sentinel under `state/backups/<timestamp>-<id>/`,
+records original hashes plus evidence hashes, and commits the entire
+reconciliation atomically to the ledger. Original audit rows remain;
+one reconciliation row is appended. Identical id/content replay is a
+no-op, while changed content or evidence under the same id refuses.
+Keep the backup and captures. Uncertain records remain reserved and
+ineligible for another batch even after importing the manifest.
+

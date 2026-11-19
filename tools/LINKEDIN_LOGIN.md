@@ -42,11 +42,11 @@ regular Chrome while a batch runs.
 - **Small, human hours.** Default window 09:00-21:00 local, jittered
   60-180 s pacing, 20/day and 90/week hard caps. Volume is what gets
   accounts restricted.
-- **Read liveness from `status`, not from loads.** `Session: live`
-  means the cookie store was touched recently; `stale` means it sat
-  untouched for 7+ days - re-run the ceremony before any batch. Only
-  `status --probe` performs a live check, and only when you pass the
-  explicit flag.
+- **Read cookie recency from `status`, not from repeated loads.** Recent
+  activity and `stale` (untouched for 7+ days) are heuristics, not proof
+  that LinkedIn accepts the session. Only an explicit `status --probe`
+  performs one guarded live check. A stale store alone does not prove
+  logout and must not trigger repeated login/profile churn.
 - **A dead session is a stop, not a retry.** Auth wall, captcha,
   verification, or rate limit halts the batch at once (exit 2) and
   the `Last error` line in `status` says which. Re-run the ceremony,
