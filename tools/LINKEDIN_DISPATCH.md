@@ -19,8 +19,62 @@ Migrating once from the old in-repo `linkedin_connect/`: the tool
 refuses the default and prints the exact `mv` until you move
 `ledger.json` (and `audit.jsonl` / `discovery_cache.json` alongside).
 
-## Batch template (fill in, then run)
+## Autonomous batch to a confirmation target
 
+`status` only counts the local ledger. Do not dispatch from its remaining
+figures alone. First resolve outstanding reservations and review current
+account-wide outgoing invitation evidence, including pending, accepted and
+withdrawn invitations. Bounds must cover the execution date and the seven
+calendar dates ending on it, including all local sends and reservations
+without double-counting. A partial Sent page, relative-time labels without a
+coverage boundary, and approximate operator estimates are not clearance.
+
+Keep a private, evidence-backed JSON manifest outside the repository:
+
+| Field | Requirement |
+|---|---|
+| `complete` | `true` only after reviewing complete account activity for both windows. |
+| `observed_at` | Actual observation time in ISO 8601 with a timezone, on the execution date. |
+| `used_today_upper`, `used_7d_upper` | Integer conservative upper bounds from the evidence, not guesses or remaining counts. |
+| `ledger_sha256` | SHA-256 of the current canonical `ledger.json` after any supported reconciliation. |
+| `evidence` | Paths to the preserved source files; relative paths are resolved beside the manifest. |
+
+Review the evidence immediately before launch and exclude any other outgoing
+invitation activity until the batch ends. The CLI verifies the date, current
+ledger hash, referenced files and room for the whole goal under the unchanged
+20/day and 90/seven-date ceilings. It records evidence hashes, does not certify
+the source's completeness for you, and never imports estimates as send
+timestamps. Stop if any part of the coverage is missing.
+
+```bash
+python3 tools/linkedin_connect.py status --json
+python3 tools/linkedin_connect.py run --live --goal 5 --account-activity /private/activity.json
+python3 tools/linkedin_connect.py status --json
+```
+
+One invocation consumes the eligible durable queue, then runs at most one
+bounded discovery pass if the pool is exhausted before the goal. It chooses
+configured seeds by new eligible cached matches, using the same search,
+page, profile-view and daily queue budgets. It never retries a profile
+within the run. Already pending/connected and proven pre-action skips do
+not fill the goal; a possible send without a positive receipt stops before
+any replacement. At most 20 candidate decisions and at most `--goal`
+possibly sent invitations are allowed. The batch sends no notes. Both
+phases use one guarded browser and one writer lock.
+
+`--goal` requires `--live`; `discover` and `run --from-ledger` still offer
+standalone previews. A goal dispatch prints confirmed, uncertain, skipped,
+already pending/connected and unattempted queue counts and retains them
+under `last_run`. Unattempted means known queue entries, not people who
+were never discovered. Exit 0 requires the goal; exit 1 means usage/state
+refusal or shortfall; exit 2 means safety stop (including unresolved attempts
+or unverified capacity); exit 130 means interruption.
+Do not follow a shortfall or stop with a second batch to fill the goal.
+
+## Explicit queue batch template
+
+- Establish verified account-wide capacity as above before using the
+  explicit queue mode; its `--limit` is not capacity evidence.
 - **quota for this batch**: at most N processed candidates (`--limit N`),
   under the 20/day and 90/week caps including unresolved reservations.
 - **queue source**: `--from-ledger` (discover-queued) and/or

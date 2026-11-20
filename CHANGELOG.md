@@ -74,7 +74,19 @@ per-file diff commands.
   with no browser start; `--json` keeps the machine shape, `--probe`
   spends one explicit live feed load behind the same lock and guard).
 
+- **On-demand LinkedIn confirmation targets**: `run --live --goal N` uses one
+  guarded session for the queue and bounded discovery replenishment. Reports
+  confirmed, skipped, uncertain and unattempted outcomes. Requires same-day
+  account-wide activity evidence, including accepted/withdrawn invitations;
+  local quota counters alone are not capacity clearance.
+
 ### Fixed
+
+- **LinkedIn overflow click after hover**: rebind the exact entry and check
+  actionability instead of pressing old viewport coordinates. A click
+  without a target-bound acknowledgement still stops and reserves quota.
+  Persist an affirmative result even if the send window closes before
+  receipt, with the observed action checkpoint as its quota timestamp.
 
 - **LinkedIn target-specific Pending receipts and overflow resolution** -
   recognize the exact full-name Pending/withdraw accessible status only in
