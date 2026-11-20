@@ -1364,25 +1364,15 @@ class MoreMenuLiRead(unittest.TestCase):
             self.log = log
             self.label = label
 
-        def click(self, timeout=None):
-            self.log.append(self.label)
+        def click(self, timeout=None, trial=False):
+            if not trial:
+                self.log.append(self.label)
 
-        def bounding_box(self, timeout=None):
-            return {"x": 10.0, "y": 20.0, "width": 100.0, "height": 30.0}
+        def hover(self, timeout=None):
+            pass
 
-        def focus(self, timeout=None):
-            self.log.append(f"focus:{self.label}")
-
-    class FakeMouse:
-        def __init__(self):
-            self.moves = []
-            self.clicks = []
-
-        def move(self, x, y):
-            self.moves.append((x, y))
-
-        def click(self, x, y):
-            self.clicks.append((x, y))
+        def element_handle(self, timeout=None):
+            return self
 
     class FakeRole:
         def __init__(self, log, label):
@@ -1420,7 +1410,6 @@ class MoreMenuLiRead(unittest.TestCase):
             self.read_selectors = []
             self.clicked = []
             self.keyboard = MoreMenuLiRead.FakeKeyboard()
-            self.mouse = MoreMenuLiRead.FakeMouse()
             self.overlays = list(overlays or [])
 
         def get_by_role(self, role, name=None, **kw):
@@ -1462,10 +1451,7 @@ class MoreMenuLiRead(unittest.TestCase):
             None,
         )
         self.assertEqual(result, "sent")
-        self.assertEqual(page.mouse.moves, [(60.0, 35.0)],
-                         "mouse moves to the item before any click")
-        self.assertEqual(page.mouse.clicks, [(60.0, 35.0)],
-                         "click lands at the hovered item coords")
+        self.assertEqual(page.clicked.count("Connect"), 1)
         self.assertEqual(sent_notes, [None], "bare invite carries no note")
 
 
@@ -1654,37 +1640,11 @@ class StepVerify(unittest.TestCase):
     CAND = {"name": "Arnab Banerjee",
             "profile_url": "https://www.linkedin.com/in/arnab-banerjee-86aa6186/"}
 
-    class FakeClick:
-        def __init__(self, log, label):
-            self.log = log
-            self.label = label
-
-        def click(self, timeout=None):
-            self.log.append(self.label)
-
-    class FakeMouse:
-        def __init__(self, fail_clicks=0):
-            self.moves = []
-            self.clicks = []
-            self.fail_clicks = fail_clicks
-
-        def move(self, x, y):
-            self.moves.append((x, y))
-
-        def click(self, x, y):
-            if self.fail_clicks > 0:
-                self.fail_clicks -= 1
-                raise RuntimeError("mouse click intercepted")
-            self.clicks.append((x, y))
 
     class FakePage:
-        """Scripted reads (one item list per menu read); More expands always
-        land; mouse moves/clicks recorded (optionally failing)."""
+        """Scripted More reads; track exact invitation presses separately."""
 
-        BOX = {"x": 10.0, "y": 20.0, "width": 100.0, "height": 30.0}
-        CENTER = (60.0, 35.0)
-
-        def __init__(self, reads, mouse_fail_clicks=0, overlays=None, body_text=""):
+        def __init__(self, reads, fail_click=False, overlays=None, body_text=""):
             self.reads = list(reads)
             self.overlays = list(overlays or [])
             self.body_text = body_text
@@ -1693,7 +1653,8 @@ class StepVerify(unittest.TestCase):
             self.keys = []
             self.focuses = 0
             self.role_calls = []
-            self.mouse = StepVerify.FakeMouse(fail_clicks=mouse_fail_clicks)
+            self.clicks = []
+            self.fail_click = fail_click
 
         def get_by_role(self, role, name=None, **kw):
             outer = self
@@ -1749,11 +1710,18 @@ class StepVerify(unittest.TestCase):
                             outer2 = outer
 
                             class Handle:
-                                def click(self, timeout=None):
+                                def click(self, timeout=None, trial=False):
+                                    if trial:
+                                        return
+                                    if outer2.fail_click:
+                                        raise RuntimeError("click intercepted after checkpoint")
+                                    outer2.clicks.append(text)
+
+                                def hover(self, timeout=None):
                                     pass
 
-                                def bounding_box(self, timeout=None):
-                                    return dict(StepVerify.FakePage.BOX)
+                                def element_handle(self, timeout=None):
+                                    return self
 
                                 def focus(self, timeout=None):
                                     outer2.focuses += 1
@@ -1794,7 +1762,7 @@ class StepVerify(unittest.TestCase):
         result, _ = self.flow(page)
         self.assertEqual(result, MENU_MISSED)
         self.assertEqual(page.expands, 2, "initial expand + ONE bounded re-expand")
-        self.assertEqual(page.mouse.clicks, [], "no press without a verified menu")
+        self.assertEqual(page.clicks, [], "no press without a verified menu")
 
     def test_expansion_resolves_exact_more_never_an_ordinal(self):
         page = self.FakePage([self.MENU])
@@ -1811,17 +1779,14 @@ class StepVerify(unittest.TestCase):
         page = self.FakePage([self.CHROME, self.MENU])
         result, sent = self.flow(page)
         self.assertEqual(result, "sent")
-        self.assertEqual(page.mouse.moves, [self.FakePage.CENTER],
-                         "mouse moves to the item before any click")
-        self.assertEqual(page.mouse.clicks, [self.FakePage.CENTER],
-                         "click lands at the hovered item coords")
+        self.assertEqual(page.clicks, ["Connect"])
         self.assertEqual(sent, [None], "bare invite carries no note")
 
     def test_missing_dialog_stops_after_one_pointer_action(self):
         page = self.FakePage([self.MENU])
         with self.assertRaises(UncertainSend):
             self.flow(page, dialog=False)
-        self.assertEqual(page.mouse.clicks, [self.FakePage.CENTER])
+        self.assertEqual(page.clicks, ["Connect"])
         self.assertNotIn("Enter", page.keys)
 
     def test_delayed_dialog_recovers_without_repress(self):
@@ -1830,8 +1795,8 @@ class StepVerify(unittest.TestCase):
         self.assertEqual(result, "sent")
         self.assertEqual(sent, [None])
 
-    def test_mouse_click_failure_is_uncertain_without_keyboard_retry(self):
-        page = self.FakePage([self.MENU], mouse_fail_clicks=9)
+    def test_bound_click_failure_is_uncertain_without_keyboard_retry(self):
+        page = self.FakePage([self.MENU], fail_click=True)
         with self.assertRaises(UncertainSend):
             self.flow(page, dialog=True)
         self.assertNotIn("Enter", page.keys)

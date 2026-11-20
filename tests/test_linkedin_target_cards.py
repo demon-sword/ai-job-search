@@ -13,16 +13,17 @@ from tools import linkedin_connect as bot
 
 FIXTURES = Path(__file__).parent / "fixtures" / "linkedin_target_cards"
 CANDIDATE = {"name": "Jeffry Issac", "profile_url": "https://www.linkedin.com/in/jeffry-issac/"}
+SYNTHETIC = {"name": "Fixture Recipient", "profile_url": "https://www.linkedin.com/in/fixture-recipient/"}
 VISIBILITY = '''<style>
 [data-readonly-visible="false"]:not(:has([data-readonly-visible="true"])) {display:none}
 [data-readonly-visible="false"]:has([data-readonly-visible="true"]) {display:contents}
 </style>'''
 
 
-def card(actions=None, extra="", name="Jeffry Issac"):
+def card(actions=None, extra="", name="Jeffry Issac", profile_url=CANDIDATE["profile_url"]):
     if actions is None:
         actions = '<a href="/preload/custom-invite/" aria-label="Invite Jeffry Issac to connect">Connect</a><button>Message</button><button>More</button>'
-    return f'''<main><section id="target"><div id="identity"><div><h2>{name}</h2><span id="degree">· 2nd</span></div><a href="{CANDIDATE['profile_url']}overlay/contact-info/">Contact info</a></div><div id="actions">{actions}</div></section>{extra}</main>'''
+    return f'''<main><section id="target"><div id="identity"><div><h2>{name}</h2><span id="degree">· 2nd</span></div><a href="{profile_url}overlay/contact-info/">Contact info</a></div><div id="actions">{actions}</div></section>{extra}</main>'''
 
 
 class TargetCardDOM(unittest.TestCase):
@@ -277,12 +278,16 @@ class TargetCardDOM(unittest.TestCase):
     def menu_page(self, entries, *, second_menu="", candidate=None):
         # Actual captured Vinaayak section, SYNTHETIC menu: acceptance retained
         # names/screenshot, not exact menu markup. Never claim byte-faithful replay.
-        candidate = candidate or {"name": "Vinaayak O.", "profile_url": "https://www.linkedin.com/in/vinayak-ojha/"}
-        html = VISIBILITY + "<main>" + (FIXTURES / "vinayak-ojha.html").read_text() + "</main>"
+        if candidate is None:
+            candidate = {"name": "Vinaayak O.", "profile_url": "https://www.linkedin.com/in/vinayak-ojha/"}
+            html = VISIBILITY + "<main>" + (FIXTURES / "vinayak-ojha.html").read_text() + "</main>"
+        else:
+            html = card(actions="<button>Follow</button><button>Message</button><button>More</button>",
+                        name=candidate["name"], profile_url=candidate["profile_url"])
         page = self.page(html + f'<div id="menu" role="menu" hidden>{entries}</div>' + second_menu,
                          candidate["profile_url"])
         more = self.driver._more_buttons(page, candidate)
-        more.evaluate('''button => {
+        more.evaluate('''(button, name) => {
           window.entryPresses=[];
           button.addEventListener('click', () => {
             const menu=document.querySelector('#menu'); menu.hidden=!menu.hidden;
@@ -294,13 +299,13 @@ class TargetCardDOM(unittest.TestCase):
             entry.addEventListener('click', () => {
               window.entryPresses.push(entry.getAttribute('aria-label') || entry.textContent);
               const pending=document.createElement('a'); pending.textContent='Pending';
-              pending.setAttribute('aria-label','Pending, click to withdraw invitation sent to Vinaayak O.');
+              pending.setAttribute('aria-label','Pending, click to withdraw invitation sent to ' + name);
               button.parentElement.append(pending);
               document.querySelector('#menu').hidden=true;
             });
             entry.addEventListener('keydown', e => {if(e.key==='Enter') entry.click()});
           });
-        }''')
+        }''', candidate["name"])
         return page, candidate
 
     def test_exact_accessible_invitation_entry_and_plain_li_reach_only_target_once(self):
@@ -348,11 +353,43 @@ class TargetCardDOM(unittest.TestCase):
         self.assertEqual(page.evaluate("window.entryPresses"), ["Connect"])
         self.assertEqual(self.actions, ["possible send"])
 
+    def test_menu_reflow_after_hover_still_presses_only_exact_entry(self):
+        page, candidate = self.menu_page(
+            '<li aria-label="Invite Fixture Recipient to connect" tabindex="0"><span>Connect</span></li>',
+            candidate=SYNTHETIC)
+        page.evaluate('''() => {
+          const menu = document.querySelector('#menu');
+          Object.assign(menu.style, {position:'fixed', top:'120px', left:'120px', width:'220px'});
+          menu.querySelector('li').addEventListener('pointerenter', () => {
+            menu.style.left = '480px';
+          }, {once:true});
+        }''')
+        self.assertEqual(self.driver._more_connect_flow(page, [0], candidate, None), "sent")
+        self.assertEqual(page.evaluate("window.entryPresses"), ["Invite Fixture Recipient to connect"])
+        self.assertEqual(self.actions, ["possible send"])
+
+    def test_exact_menu_click_without_receipt_or_dialog_is_not_retried(self):
+        page, candidate = self.menu_page(
+            '<a role="menuitem" aria-label="Invite Fixture Recipient to connect">Connect</a>',
+            candidate=SYNTHETIC)
+        page.evaluate('''() => {
+          window.entryPresses = [];
+          document.querySelector('#menu a').addEventListener('click', () => {
+            window.entryPresses.push('Connect');
+            document.querySelector('#menu').hidden = true;
+          });
+        }''')
+        with patch.object(page, "wait_for_timeout", return_value=None):
+            with self.assertRaises(bot.UncertainSend):
+                self.driver._more_connect_flow(page, [0], candidate, None)
+        self.assertEqual(page.evaluate("window.entryPresses"), ["Connect"])
+        self.assertEqual(self.actions, ["possible send"])
+
     def test_keyboard_fallback_closes_open_menu_before_reexpanding(self):
         page, candidate = self.menu_page(
             '<li aria-label="Invite Vinaayak O. to connect" tabindex="0"><span>Connect</span></li>')
         with patch.object(page, "wait_for_timeout", return_value=None), \
-                patch.object(self.driver, "_menu_entry_box", return_value=None):
+                patch("playwright.sync_api.Locator.hover", side_effect=RuntimeError("cannot hover")):
             self.assertEqual(self.driver._more_connect_flow(page, [0], candidate, None), "sent")
         self.assertEqual(page.evaluate("window.entryPresses"), ["Invite Vinaayak O. to connect"])
         self.assertEqual(self.actions, ["possible send"])

@@ -537,11 +537,8 @@ def scan_entry_controls(names) -> dict:
 FOLLOW_ONLY = "follow_only"
 NOTE_REQUIRED = "note_required"
 UNKNOWN_CONTROLS = "unknown_controls"
-# Step-verified misses: the menu never yielded a verified entry, or a
-# clicked Connect never yielded a verified dialog, after the one bounded
-# re-attempt each. run_queue treats both exactly like unknown_controls
-# (no ledger write, storm streak, skip with the step reason) - they are
-# distinct outcomes so the audit says which transition failed.
+# Step misses are bounded pre-invitation failures. After a possibly sending
+# Connect press, a missing receipt/dialog is uncertainty, not a step miss.
 MENU_MISSED = "menu_missed"
 DIALOG_MISSED = "dialog_missed"
 OVERLAY_BLOCKED = "overlay_blocked"
@@ -1520,35 +1517,19 @@ class PlaywrightDriver(InviteDriver):
             return None
         return entries
 
-    def _menu_entry_box(self, page, entry_name: str):
-        """Viewport box of the dropdown entry, or None when it cannot be
-        resolved to exactly one visible target."""
-        try:
-            target = self._menu_entry_locator(page, entry_name)
-            return target.bounding_box(timeout=5000) if target is not None else None
-        except Exception:
-            return None
-
     def _human_press_entry(self, page, entry_name: str, candidate: dict, note: str | None,
                            slug: str, tag: str):
-        """Press a verified menu entry the human way: re-verify the menu is
-        still open with the entry, move the mouse to the item, hover-settle
-        with a screenshot, re-verify again, then click at the item's coords.
-        Trusted pointer events throughout - no JS event synthesis. Returns
-        the send outcome, or None when any assert fails (caller escapes and
-        moves on). The challenge family still raises."""
+        """Hover, then re-resolve and use Playwright's checked pointer action."""
         name = candidate.get("name") or ""
         if pick_invite_entry(self._read_menu(page), name, bare_ok=True) != entry_name:
             self._capture(page, slug, f"{tag}_premove", ok=False)
             return None
-        box = self._menu_entry_box(page, entry_name)
-        if not box:
-            self._capture(page, slug, f"{tag}_nobox", ok=False)
-            return None
-        x = box["x"] + box["width"] / 2
-        y = box["y"] + box["height"] / 2
         try:
-            page.mouse.move(x, y)
+            target = self._menu_entry_locator(page, entry_name)
+            if target is None:
+                self._capture(page, slug, f"{tag}_noentry", ok=False)
+                return None
+            target.hover(timeout=3000)
             page.wait_for_timeout(800)
         except InviteStop:
             raise
@@ -1556,11 +1537,28 @@ class PlaywrightDriver(InviteDriver):
             self._capture(page, slug, f"{tag}_move", ok=False)
             return None
         self._capture(page, slug, f"{tag}_hover", ok=True)
+        stop = self._page_state(page)
+        if stop is not None:
+            raise stop
+        self._target_card(page, candidate)
         if pick_invite_entry(self._read_menu(page), name, bare_ok=True) != entry_name:
             self._capture(page, slug, f"{tag}_preclick", ok=False)
             return None
+        try:
+            target = self._menu_entry_locator(page, entry_name)
+            if target is None:
+                return None
+            target = target.element_handle(timeout=3000)
+            # Never dispatch to a coordinate saved before hover/capture.
+            # Trial checks stable geometry and pointer hit without pressing.
+            target.click(trial=True, timeout=3000)
+        except InviteStop:
+            raise
+        except Exception:
+            self._capture(page, slug, f"{tag}_actionability", ok=False)
+            return None
         return self._press_connect_and_send(
-            page, lambda: page.mouse.click(x, y), candidate, note, slug, tag)
+            page, lambda: target.click(timeout=3000), candidate, note, slug, tag)
 
     def _keyboard_press_entry(self, page, pos: int, entry_name: str, candidate: dict,
                               note: str | None, slug: str, tag: str):
@@ -1580,11 +1578,14 @@ class PlaywrightDriver(InviteDriver):
             target = self._menu_entry_locator(page, entry_name)
             if target is None:
                 return None
-            target.focus(timeout=10000)
+            target = target.element_handle(timeout=3000)
+            target.focus()
+            if not target.evaluate("e => e === document.activeElement"):
+                return None
         except Exception:
             return None
         return self._press_connect_and_send(
-            page, lambda: page.keyboard.press("Enter"), candidate, note, slug, tag)
+            page, lambda: target.press("Enter", timeout=3000), candidate, note, slug, tag)
 
     # Every Connect control is inside the verified target card: Connect can
     # itself send immediately, so post-click dialog identity is insufficient.
@@ -2114,12 +2115,47 @@ def pace_delay(min_delay: float, max_delay: float, rng: random.Random) -> float:
     return rng.uniform(min_delay, max_delay)
 
 
+def _account_capacity(manifest_path: Path | None, ledger_path: Path, ledger: dict,
+                      day: str, cap: int, goal: int) -> dict:
+    """Check an operator's evidence-backed upper bounds, not a platform quota API."""
+    if manifest_path is None:
+        raise ValueError("verified account-wide activity is required (--account-activity)")
+    manifest = json.loads(manifest_path.read_bytes())
+    if not isinstance(manifest, dict) or manifest.get("complete") is not True:
+        raise ValueError("account activity must cover all invitations, including accepted and withdrawn")
+    when = datetime.fromisoformat(manifest["observed_at"])
+    if when.tzinfo is None or when > datetime.now().astimezone() or today_str(when.astimezone()) != day:
+        raise ValueError("account activity must be observed on the execution date with a timezone")
+    digest = hashlib.sha256(ledger_path.read_bytes()).hexdigest()
+    if manifest.get("ledger_sha256") != digest:
+        raise ValueError("account activity does not match the current ledger")
+    daily, weekly = manifest["used_today_upper"], manifest["used_7d_upper"]
+    if (type(daily) is not int or type(weekly) is not int or not 0 <= daily <= weekly
+            or daily < quota_today(ledger, day) or weekly < quota_last_7d(ledger, day)):
+        raise ValueError("account activity bounds cannot omit local usage or reservations")
+    if min(cap - daily, HARD_WEEKLY_CAP - weekly) < goal:
+        raise ValueError(f"verified account-wide capacity is below the requested {goal}")
+    sources = manifest.get("evidence")
+    if not isinstance(sources, list) or not sources:
+        raise ValueError("account activity must reference preserved source evidence")
+    hashes = []
+    for filename in sources:
+        path = manifest_path.parent / Path(filename).expanduser()
+        contents = path.read_bytes()
+        if not contents:
+            raise ValueError("account activity evidence is empty")
+        hashes.append(hashlib.sha256(contents).hexdigest())
+    return dict(observed_at=when.isoformat(), day=day, used_today_upper=daily,
+                used_7d_upper=weekly, ledger_sha256=digest, evidence_sha256=hashes)
+
+
 def run_queue(
     candidates: list[dict], cfg: dict, ledger: dict, audit_path: Path, *,
     live: bool, cap: int, day: str, window: str, note: str | None,
     limit: int, min_delay: float, max_delay: float, driver_factory=None,
     sleeper=None, rng: random.Random | None = None, now_iso: str | None = None,
     clock=None, login_grace_s=LOGIN_GRACE_S, login_interval_s=LOGIN_POLL_S,
+    goal: int | None = None, replenish=None, account_activity: Path | None = None,
 ) -> dict:
     """Ledger is authoritative; reserve before the driver, persist every result.
 
@@ -2138,6 +2174,8 @@ def run_queue(
     run = None
     current_key = None
     driver = None
+    if goal is not None:
+        summary["goal"] = goal
 
     def persist():
         if live:
@@ -2164,12 +2202,18 @@ def run_queue(
     elif live and unresolved_attempts(ledger):
         summary["stopped"] = "reconciliation_required"
         reason = "reconcile unresolved attempts: " + ", ".join(unresolved_attempts(ledger))
+    elif goal is not None:
+        try:
+            summary["account_activity"] = _account_capacity(
+                account_activity, ledger_path, ledger, day, cap, goal)
+        except (OSError, KeyError, TypeError, ValueError) as exc:
+            summary["stopped"], reason = "capacity_unverified", scrub(str(exc))
     if reason:
         if live:
             ledger["last_error"] = dict(ts=timestamp, reason=reason)
         emit(dict(ts=timestamp, decision="refuse", reason=reason, live=live))
         return summary
-    if not candidates:
+    if not candidates and replenish is None:
         return summary
     if live:
         run = dict(id=uuid.uuid4().hex, pid=os.getpid(), status="running",
@@ -2178,17 +2222,20 @@ def run_queue(
         summary["run_id"] = run["id"]
         persist()
 
-    def checkpoint(*, action=False):
+    def checkpoint(*, action=False, completed=False):
         nonlocal timestamp
         timestamp = stamp()
-        ledger["attempts"][current_key].update(reserved_ts=timestamp, last_ts=timestamp)
-        if action:
-            attempt = ledger["attempts"][current_key]
-            attempt["actions"] = attempt.get("actions", 0) + 1
-        if not inside_window(window):
-            raise UnexpectedUI("daily window closed before a sending action")
-        if quota_today(ledger, timestamp[:10]) > cap or quota_last_7d(ledger, timestamp[:10]) > HARD_WEEKLY_CAP:
-            raise UnexpectedUI("quota changed before a sending action")
+        attempt = ledger["attempts"][current_key]
+        if not completed:
+            if goal is not None and timestamp[:10] != day:
+                raise UnexpectedUI("account-activity date changed before a sending action")
+            if not inside_window(window):
+                raise UnexpectedUI("daily window closed before a sending action")
+            attempt.update(reserved_ts=timestamp, last_ts=timestamp)
+            if quota_today(ledger, timestamp[:10]) > cap or quota_last_7d(ledger, timestamp[:10]) > HARD_WEEKLY_CAP:
+                raise UnexpectedUI("quota changed before a sending action")
+            if action:
+                attempt["actions"] = attempt.get("actions", 0) + 1
         delay = pace_delay(min_delay, max_delay, rng)
         action_time = (datetime.fromisoformat(timestamp) if now_iso is not None or clock is not None
                        else datetime.now().astimezone())
@@ -2204,19 +2251,37 @@ def run_queue(
             driver.before_action = lambda: checkpoint(action=True)
             driver.start()
             if not driver.session_is_live():
-                print("LOGIN-NEEDED - sign in manually in this run's window.", file=sys.stderr)
-                if not await_live_session(driver, grace_s=login_grace_s,
-                                          interval_s=login_interval_s, sleeper=sleeper):
+                if goal is None:
+                    print("LOGIN-NEEDED - sign in manually in this run's window.", file=sys.stderr)
+                if goal is not None or not await_live_session(
+                        driver, grace_s=login_grace_s, interval_s=login_interval_s, sleeper=sleeper):
                     summary["stopped"] = "login_needed"
                     timestamp = stamp()
                     emit(dict(ts=timestamp, decision="refuse", live=True,
-                              reason=f"login grace expired ({login_grace_s}s) - no live session, nothing sent"))
+                              reason=(f"login grace expired ({login_grace_s}s) - no live session, nothing sent"
+                                      if goal is None else "login needed; nothing sent")))
                     return summary
-        order = sorted(range(len(candidates)), key=lambda i: queue_tier(candidates[i], ledger))
-        for idx in order:
-            if limit > 0 and processed >= limit:
-                break
-            candidate = candidates[idx]
+        pending = iter(sorted(candidates, key=lambda c: queue_tier(c, ledger)))
+        while not (limit > 0 and processed >= limit) and (goal is None or summary["sent"] < goal):
+            candidate = next(pending, None)
+            if candidate is None:
+                if replenish is None:
+                    break
+                timestamp = stamp()
+                if timestamp[:10] != day or not inside_window(window):
+                    summary["stopped"] = "outside_window"
+                    break
+                replacements, discovery = replenish(driver)
+                replenish = None  # one discovery pass and its original budgets per invocation
+                summary["discovery"] = discovery
+                candidates = [*candidates, *replacements]
+                summary["unattempted"] = len(candidates) - processed
+                if discovery["stopped"] == "outside_window":
+                    summary["stopped"] = "outside_window"
+                    break
+                persist()
+                pending = iter(sorted(replacements, key=lambda c: queue_tier(c, ledger)))
+                continue
             timestamp = stamp()
             try:
                 key = canonical_key(str(candidate.get("profile_url") or ""))
@@ -2229,11 +2294,12 @@ def run_queue(
             known = ledger.get("persons", {}).get(key)
             score, reasons = score_candidate(candidate, cfg)
             base = dict(profile=key, name=candidate.get("name"), score=score, live=live)
-            if known and known.get("status") in RUN_SKIP_STATUSES:
+            status = _dedupe_status(ledger, key)
+            if status in RUN_SKIP_STATUSES:
                 processed += 1
                 unknown_streak = 0
                 summary["skipped"] += 1
-                emit(dict(base, ts=timestamp, decision="skip", reason=f"dedupe: already {known['status']}"))
+                emit(dict(base, ts=timestamp, decision="skip", reason=f"dedupe: already {status}"))
                 continue
             if score < float(cfg.get("min_score", 0)):
                 processed += 1
@@ -2259,7 +2325,7 @@ def run_queue(
                 if remaining > 0:
                     (sleeper or time.sleep)(remaining)
             timestamp = stamp()
-            if not inside_window(window):
+            if not inside_window(window) or (goal is not None and timestamp[:10] != day):
                 summary["stopped"] = "outside_window"
                 emit(dict(base, ts=timestamp, decision="defer", reason="window closed before next attempt"))
                 break
@@ -2271,9 +2337,11 @@ def run_queue(
             checkpoint()
             outcome = driver.send_invite(candidate, note)
             attempt = ledger["attempts"][key]
+            if goal is not None and outcome != "sent" and attempt.get("actions", 0):
+                raise UncertainSend(f"possible invitation action ended without a positive receipt ({outcome})")
             if outcome == "sent" or attempt.get("actions", 0):
                 # Start the next floor after completion, not before a slow click.
-                checkpoint()
+                checkpoint(completed=True)
             elif deadline is None:
                 ledger.pop("next_send_after", None)
             else:
@@ -2300,8 +2368,9 @@ def run_queue(
             person.update(last_ts=timestamp, score=score, reasons=reasons)
             if outcome == "sent":
                 person["status"] = "invited"
-                ledger["sends"].append(timestamp)
-                attempt["counted_ts"] = timestamp
+                counted = attempt["reserved_ts"] if attempt.get("actions") else timestamp
+                ledger["sends"].append(counted)
+                attempt["counted_ts"] = counted
                 summary["sent"] += 1
             elif outcome in ("already_pending", "already_connected"):
                 person["status"] = "invited" if outcome == "already_pending" else "connected"
@@ -2313,6 +2382,8 @@ def run_queue(
             emit(dict(base, ts=timestamp, decision="skip" if outcome in (FOLLOW_ONLY, NOTE_REQUIRED) else "send",
                       result=outcome, reason="; ".join(reasons), tier=tier_name(candidate, known)))
             current_key = None
+        if goal is not None and summary["sent"] < goal and summary["stopped"] is None:
+            summary["stopped"] = "goal_not_met"
     except BaseException as exc:
         timestamp = stamp()
         signal = exc.signal if isinstance(exc, InviteStop) else type(exc).__name__
@@ -2367,6 +2438,7 @@ def run_discover(
     sleeper=None,
     rng: random.Random | None = None,
     now_iso: str | None = None,
+    driver=None,
 ) -> dict:
     """Execute one discovery pass: search people-search, score the cards with
     the invite matcher's score_candidate, and queue matches in the ledger for
@@ -2389,7 +2461,7 @@ def run_discover(
         "cache_hits": 0,
         "queued": 0,
         "skipped": 0,
-        "deferred": 0,
+        "deferred": max(0, len(queries) - max(0, max_searches)),
         "stopped": None,
         "decisions": [],
     }
@@ -2399,12 +2471,9 @@ def run_discover(
         return summary
 
     min_score = float(cfg.get("min_score", 0))
-    driver = None
-    if live:
-        if driver_factory is None:
-            raise ValueError("live discovery needs a driver factory")
-        driver = driver_factory()
-        driver.start()
+    owns_driver = live and driver is None
+    if owns_driver and driver_factory is None:
+        raise ValueError("live discovery needs a driver")
 
     def audit(record: dict) -> None:
         if live:
@@ -2412,6 +2481,9 @@ def run_discover(
 
     fetches = 0
     try:
+        if owns_driver:
+            driver = driver_factory()
+            driver.start()
         for query in queries[: max(0, max_searches)]:
             keywords = query["keywords"]
             location = query.get("location") or ""
@@ -2428,9 +2500,15 @@ def run_discover(
                     summary["decisions"].append(record)
                     break
                 else:
+                    if queued_today(ledger, day) >= max(1, max_queued):
+                        summary["stopped"] = "queue_cap_reached"
+                        return summary
                     if fetches > 0:
                         delay = pace_delay(search_min_delay, search_max_delay, rng)
                         (sleeper or (lambda s: __import__("time").sleep(s)))(delay)
+                    if not inside_window(window) or (not owns_driver and today_str() != day):
+                        summary["stopped"] = "outside_window"
+                        return summary
                     try:
                         results = driver.search_people(keywords, location, page)
                     except InviteStop as stop:
@@ -2457,14 +2535,21 @@ def run_discover(
                         )
                     )
                     if summary["stopped"] == "queue_cap_reached":
-                        break
-                if summary["stopped"] == "queue_cap_reached":
-                    break
-        summary["deferred"] = max(0, len(queries) - max(0, max_searches))
+                        return summary
     finally:
-        if driver is not None:
+        if owns_driver and driver is not None:
             driver.close()
     return summary
+
+
+def _dedupe_status(ledger: dict, key: str) -> str | None:
+    status = ledger["persons"].get(key, {}).get("status")
+    attempt = ledger.get("attempts", {}).get(key, {})
+    if attempt.get("counted_ts") or attempt.get("status") in ("sent", "already_pending"):
+        return "invited"
+    if attempt.get("status") == "already_connected":
+        return "connected"
+    return status
 
 
 def handle_card(
@@ -2497,13 +2582,18 @@ def handle_card(
         record = {"ts": timestamp, "decision": "skip", "reason": f"unkeyable card: {exc}", "live": live}
         audit(record)
         return record
-    known = (ledger.get("persons", {}) or {}).get(key)
-    if known and known.get("status") in DISCOVERY_STATUSES:
+    status = _dedupe_status(ledger, key)
+    if status in DISCOVERY_STATUSES:
         summary["skipped"] += 1
         record = {
             "ts": timestamp, "profile": key, "name": candidate["name"],
-            "decision": "skip", "reason": f"dedupe: already {known['status']}", "live": live,
+            "decision": "skip", "reason": f"dedupe: already {status}", "live": live,
         }
+        audit(record)
+        return record
+    if not candidate["name"].strip():
+        summary["skipped"] += 1
+        record = {"ts": timestamp, "profile": key, "decision": "skip", "reason": "missing name", "live": live}
         audit(record)
         return record
     # A card without a headline cannot be scored fairly - the signal usually
@@ -2583,6 +2673,64 @@ def load_candidates(path: Path) -> list[dict]:
     if not isinstance(data, list) or not all(isinstance(c, dict) for c in data):
         sys.exit(f"candidates file {path} must be a JSON array of objects")
     return data
+
+
+def _queued_candidates(ledger: dict) -> list[dict]:
+    return [person for person in ledger["persons"].values()
+            if person.get("status") == "queued" and person.get("profile_url")]
+
+
+def _dispatch_queries(cfg: dict, ledger: dict, cache: dict, defaults: dict) -> list[dict]:
+    """Rank configured seeds by distinct, eligible cached cards; never raise the budgets."""
+    remaining = []
+    minimum = float(cfg.get("min_score", 0))
+    for query in discovery_queries(cfg):
+        keys = set()
+        uncached = False
+        for page in range(1, defaults["max_pages"] + 1):
+            entry = cache["pages"].get(cache_key(query["keywords"], query["location"], page))
+            if entry is None:
+                uncached = True
+                continue
+            for card in entry["results"]:
+                try:
+                    key = canonical_key(card.get("profile_url") or "")
+                except ValueError:
+                    continue
+                status = _dedupe_status(ledger, key)
+                if (status not in DISCOVERY_STATUSES and card.get("name") and key.startswith("in:")
+                        and score_candidate(card, cfg)[0] >= minimum):
+                    keys.add(key)
+        remaining.append((query, keys, uncached))
+    selected, seen = [], set()
+    while remaining and len(selected) < defaults["max_searches"]:
+        best = max(range(len(remaining)),
+                   key=lambda i: (len(remaining[i][1] - seen), remaining[i][2]))
+        query, keys, _ = remaining.pop(best)
+        seen.update(keys)
+        selected.append(query)
+    return selected
+
+
+def _replenish_queue(driver, cfg: dict, ledger: dict, state_dir: Path, day: str, window: str):
+    defaults = discovery_defaults(cfg)
+    cache_path = state_dir / CACHE_NAME
+    cache = load_cache(cache_path)
+    before = {key for key, person in ledger["persons"].items() if person.get("status") == "queued"}
+    try:
+        discovery = run_discover(
+            _dispatch_queries(cfg, ledger, cache, defaults), cfg, ledger, cache, state_dir / AUDIT_NAME,
+            live=True, day=day, window=window, driver=driver,
+            max_searches=defaults["max_searches"], max_pages=defaults["max_pages"],
+            max_profile_views=defaults["max_profile_views"],
+            max_queued=min(HARD_DAILY_CAP, defaults["max_queued_per_day"]),
+            search_min_delay=defaults["search_min_delay"], search_max_delay=defaults["search_max_delay"])
+    finally:
+        save_ledger(state_dir / LEDGER_NAME, ledger)
+        save_cache(cache_path, cache)
+    replacement = [row for row in _queued_candidates(ledger)
+                   if canonical_key(row["profile_url"]) not in before]
+    return replacement, {key: value for key, value in discovery.items() if key != "decisions"}
 
 
 def cmd_discover(args) -> int:
@@ -2687,10 +2835,10 @@ def cmd_plan(args) -> int:
             rows.append({"profile": None, "name": candidate.get("name"), "decision": "skip",
                          "reason": f"unkeyable: {exc}"})
             continue
-        known = ledger.get("persons", {}).get(key)
-        if known and known.get("status") in RUN_SKIP_STATUSES:
+        status = _dedupe_status(ledger, key)
+        if status in RUN_SKIP_STATUSES:
             rows.append({"profile": key, "name": candidate.get("name"), "decision": "skip",
-                         "reason": f"dedupe: already {known['status']}"})
+                         "reason": f"dedupe: already {status}"})
             continue
         score, reasons = score_candidate(candidate, cfg)
         if score < min_score:
@@ -2840,25 +2988,41 @@ def cmd_run(args) -> int:
     except (OSError, ValueError) as exc:
         sys.exit(f"bad note file: {exc}")
     cfg = load_targets(args.targets)
+    if args.goal is not None:
+        if not 1 <= args.goal <= cap:
+            sys.exit("--goal must be between 1 and the daily cap")
+        if not args.live or args.from_ledger or args.candidates is not None or args.limit or note:
+            sys.exit("--goal requires --live and uses its own queue and bare invitations, not other run inputs")
+        defaults = discovery_defaults(cfg)
+        if (min(defaults["max_searches"], defaults["max_pages"], defaults["max_profile_views"],
+                defaults["max_queued_per_day"]) < 1
+                or not 0 <= defaults["search_min_delay"] <= defaults["search_max_delay"]
+                or not discovery_queries(cfg)):
+            sys.exit("invalid discovery budgets or empty seed queries")
+    elif args.account_activity is not None:
+        sys.exit("--account-activity is for verified --goal dispatches")
 
     def execute():
         # Load only after acquiring the single-writer lock, not before waiting.
         ledger = load_ledger(state_dir / LEDGER_NAME)
-        candidates = []
-        if args.from_ledger:
-            candidates = [dict(person) for person in ledger["persons"].values()
-                          if person.get("status") == "queued" and person.get("profile_url")]
+        day = today_str()
+        candidates = _queued_candidates(ledger) if (args.from_ledger or args.goal is not None) else []
         if args.candidates is not None:
             candidates.extend(load_candidates(args.candidates))
-        elif not args.from_ledger:
-            sys.exit("pass --candidates queue.json or --from-ledger for discover-queued profiles")
-        if not candidates:
+        elif not args.from_ledger and args.goal is None:
+            sys.exit("pass --candidates queue.json, --from-ledger, or --live --goal")
+        if not candidates and args.goal is None:
             print("no queued profiles in the ledger - run discover first or pass --candidates.")
         return run_queue(
             candidates, cfg, ledger, state_dir / AUDIT_NAME, live=args.live, cap=cap,
-            day=today_str(), window=args.window, note=note, limit=args.limit,
+            day=day, window=args.window, note=note,
+            limit=HARD_DAILY_CAP if args.goal is not None else args.limit,
             min_delay=args.min_delay, max_delay=args.max_delay,
-            driver_factory=lambda: PlaywrightDriver(args.profile_dir, capture_dir=state_dir / "diag_run"))
+            goal=args.goal, account_activity=args.account_activity,
+            replenish=(lambda driver: _replenish_queue(driver, cfg, ledger, state_dir, day, args.window))
+            if args.goal is not None else None,
+            driver_factory=lambda: PlaywrightDriver(args.profile_dir, places=cfg.get("location_allow", []),
+                                                    capture_dir=state_dir / "diag_run"))
 
     try:
         if args.live:
@@ -2880,6 +3044,9 @@ def cmd_run(args) -> int:
         print(f"live: {summary['sent']} sent, {summary['skipped']} skipped, "
               f"{summary['already_pending']} already pending, {summary['already_connected']} already connected, "
               f"{summary['uncertain']} uncertain, {summary['failed']} failed, {summary['unattempted']} unattempted.")
+        if args.goal is not None:
+            print(f"goal: {summary['sent']}/{args.goal} confirmed"
+                  + (f" (run {summary['run_id']})" if summary.get("run_id") else ""))
     else:
         for row in summary["decisions"]:
             label = "WOULD SEND" if row["decision"] == "dry-run" else "SKIP"
@@ -2888,11 +3055,12 @@ def cmd_run(args) -> int:
     stop = summary["stopped"]
     if stop:
         detail = (f"{MAX_CONSECUTIVE_UNKNOWN + 1} consecutive unreadable profiles"
-                  if stop == "unknown_controls" else stop)
+                  if stop == "unknown_controls" else
+                  summary["decisions"][-1]["reason"] if stop == "capacity_unverified" else stop)
         print(f"BOT STOPPED - {detail}", file=sys.stderr)
-    if stop in ("unknown_controls", "login_needed", "reconciliation_required"):
+    if stop in ("unknown_controls", "login_needed", "reconciliation_required", "capacity_unverified"):
         return EXIT_STOPPED
-    return 1 if stop == "outside_window" else 0
+    return 1 if stop == "outside_window" or (args.goal is not None and summary["sent"] < args.goal) else 0
 
 
 def last_error_line(state_dir: Path) -> str | None:
@@ -2996,6 +3164,7 @@ def cmd_status(args) -> int:
             "quota_last_7d": used_week,
             "reserved_last_7d": reserved_count(ledger, day, 7),
             "unresolved_attempts": pending,
+            "quota_scope": "local_ledger",
             "last_run": last_run,
             "persons_by_status": by_status,
             "last_error": error,
@@ -3010,6 +3179,7 @@ def cmd_status(args) -> int:
     print(f"Invites sent today: {sent_day} of {cap}; quota used {used_day} ({max(0, cap - used_day)} left)")
     print(f"Invites this week: {sent_week} of {HARD_WEEKLY_CAP}; quota used {used_week} "
           f"({max(0, HARD_WEEKLY_CAP - used_week)} left)")
+    print("Quota scope: local ledger only; account-wide activity is not verified by status.")
     print(f"Reservations: {reserved_count(ledger, day)} today; {len(pending)} unresolved total")
     print(f"Last run: {last_run.get('id', 'none')} / {last_run.get('status', 'none')}")
     print(f"Last error: {error if error else 'none'}")
@@ -3121,6 +3291,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--live", action="store_true", help="explicit operator flag: actually send invites")
     run.add_argument("--max-per-day", type=int, default=HARD_DAILY_CAP)
     run.add_argument("--limit", type=int, default=0, help="cap decisions this run (0 = no run cap)")
+    run.add_argument("--goal", type=int, help="live dispatch: target N confirmed invites, replenishing clean skips")
+    run.add_argument("--account-activity", type=Path, help="evidence-backed same-day account usage for --goal")
     run.add_argument("--window", default=DEFAULT_WINDOW, help='daily window "HH:MM-HH:MM" local time')
     run.add_argument("--note-file", type=Path, help="optional invite note file (<=300 chars)")
     run.add_argument("--min-delay", type=float, default=DEFAULT_MIN_DELAY)

@@ -34,6 +34,11 @@ Two stages share one ledger, one audit log, and one safety discipline:
 2. **Invite** sends connection requests to the queued profiles (or to a
    hand-collected `queue.json`, which still works as before).
 
+For one on-demand run that owns both stages and stops at a confirmed
+invitation goal, see [`run --live --goal`](LINKEDIN_DISPATCH.md#autonomous-batch-to-a-confirmation-target).
+The goal mode requires current account-wide quota evidence and accounts
+for proven skips without increasing the discovery budgets.
+
 ```bash
 # 1. Preview discovery. Reads the cache, prints what WOULD be searched and
 #    WOULD be queued. Writes nothing at all. This is the default.
@@ -108,19 +113,18 @@ verified target action group. It is read-only status evidence, never a
 Withdraw action. A first-name-only success toast does not confirm delivery.
 
 Overflow entry reads ignore hidden copies. Resolution accepts the exact
-accessible label or exact visible text inside one visible dropdown; it
-never picks the first of ambiguous entries/menus. Wrong-person labels,
-disabled entries and destructive/note-only text cannot supply Connect.
-The non-sending keyboard fallback closes an existing menu before reopening
-it; no fallback occurs after a possibly sending press.
+accessible label or exact visible text inside one visible dropdown and
+excludes wrong-person, disabled, ambiguous and destructive entries. After
+hover it rebinds that entry and checks pointer actionability before the
+reserved click; it never clicks stale screen coordinates. The non-sending
+keyboard fallback closes before reopening and requires exact entry focus.
+There is no fallback after a possibly sending press.
 
-The Nov-21 Vinaayak capture retained a named invitation entry and visible
-Connect, but not its menu DOM. Offline regressions on the captured profile
-section cover both accessible-name/text mismatch and hidden-name duplicates;
-these are counterfactual menu layouts, not a proven unique live cause.
-The permitted read-only revisit found no mounted menu. Exact-layout live
-validation still needs a separately authorized non-sending capture of that
-target's open More menu; no invitation/retry is implied.
+A recorded Connect with neither a receipt nor a named invitation dialog
+does not establish what happened on LinkedIn. Offline fixtures distinguish
+a menu movement that swallowed a coordinate press from an actual entry
+click with no acknowledgement. The latter remains uncertain; neither
+fixture identifies the initiating cause of a particular live incident.
 
 ## Setup for live sending
 
@@ -137,6 +141,5 @@ Tune targeting by copying `tools/linkedin_connect_targets.json` and passing
 `--targets` — criteria are data, never hardcoded names. An optional invite
 note (≤300 chars) comes from `--note-file`.
 
-Exit codes: `0` ok (including a planned halt at the daily cap),
-`1` usage/state/refused (outside window, lock held, login guard, bad flags),
-`2` safety stop.
+Exit codes: `0` ok (in goal mode, only after the confirmation goal);
+`1` usage/state/refusal or goal shortfall; `2` safety stop; `130` interruption.
