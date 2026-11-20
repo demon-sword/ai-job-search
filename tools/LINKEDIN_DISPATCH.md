@@ -93,3 +93,16 @@ no-op, while changed content or evidence under the same id refuses.
 Keep the backup and captures. Uncertain records remain reserved and
 ineligible for another batch even after importing the manifest.
 
+For a proven target-boundary misclassification, `outcome: unknown_controls`
+may explicitly reclassify a matching `follow_only` person/attempt only when
+no sending actions or confirmed send were recorded. Supply the actual
+evidence timestamp and preserved target-card captures; the same backup,
+hashing and replay safeguards apply. This changes capability to unknown/
+retryable, not invitation availability or delivery. It never opens a
+browser or sends; a later retry still requires separate authorization.
+
+Pre-action failures save sanitized final URL/readiness, heading/root/action
+counts, a screenshot and complete structural target-card DOM in `diag_run`.
+Unknown hydration, inaccessible More or unsupported/ambiguous identity must
+not be inferred as a target invitation restriction from page-wide Follow.
+

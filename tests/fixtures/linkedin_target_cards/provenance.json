@@ -1,0 +1,51 @@
+{
+  "origin": "Authorized sole-native-profile read-only capture; no page-control clicks. Full nearest profile section, not the earlier truncated fragment.",
+  "sanitization": "Scripts/media/forms/events/query parameters removed at capture; rotating classes removed and non-identity/action text redacted for fixtures. Visibility flags retain original rendered controls, including hidden responsive duplicates.",
+  "captures": [
+    {
+      "candidate": {
+        "name": "Vinaayak O.",
+        "profile_url": "https://www.linkedin.com/in/vinayak-ojha/"
+      },
+      "captured_at": "2026-11-21T01:16:27+05:30",
+      "source_sha256": "05f7654201590ed1f4d0a8ee87f91d0d477fd2d10cec8b7c7de050e3886cd012",
+      "fixture_sha256": "7e554625479627877ff686b49ad6411be01b631ba3bede33dca02d9a40d109ca"
+    },
+    {
+      "candidate": {
+        "name": "Jeffry Issac",
+        "profile_url": "https://www.linkedin.com/in/jeffry-issac/"
+      },
+      "captured_at": "2026-11-21T01:16:33+05:30",
+      "source_sha256": "787117da2b95156a20cad3a29adb7716999ca3141d31d61557af47c8bee03dbe",
+      "fixture_sha256": "92efa994174b55d017e6fb726e7da555f19a4d88933b5d505451426897874a50"
+    },
+    {
+      "candidate": {
+        "name": "Divya Chhabra",
+        "profile_url": "https://www.linkedin.com/in/divyamutreja/"
+      },
+      "captured_at": "2026-11-21T01:16:38+05:30",
+      "source_sha256": "4c19b62e8fe1743ffb361eb8bb2fbeff6748ac2aabcf2559db34a509062c118a",
+      "fixture_sha256": "ff610cafd22d142f8ad3f3934300bbcfdc7f12f25d63e5938bcb2dc3abf35aaa"
+    },
+    {
+      "candidate": {
+        "name": "Bobby Mittal",
+        "profile_url": "https://www.linkedin.com/in/bobbymittal/"
+      },
+      "captured_at": "2026-11-21T01:16:43+05:30",
+      "source_sha256": "1cae49f6616f74d74702b9542770416900bcd8d5cab8141e39df39aa9bdb8f32",
+      "fixture_sha256": "b8d2eb9a50c194d37ff08507f4b9bd34accec0a07b8887838bd6ca442265a400"
+    },
+    {
+      "candidate": {
+        "name": "Megha Puri Mehta",
+        "profile_url": "https://www.linkedin.com/in/meghapuri/"
+      },
+      "captured_at": "2026-11-21T01:16:47+05:30",
+      "source_sha256": "94d70b37f35aa79a6971ce52bc62d2e97fae09cc6e782b94f4f33b4e3d2472fc",
+      "fixture_sha256": "0b92bf421b683239603ead891edb6ccbd4c8459981183cad4f60c84b90ce767d"
+    }
+  ]
+}

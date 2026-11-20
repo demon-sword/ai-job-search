@@ -1616,10 +1616,12 @@ class DirectConnect(unittest.TestCase):
             None, "in-niraj")
 
     def test_sees_non_button_connect_and_sends(self):
-        page = self.FakePage(["a:Connect", "div[role=button]:Connect"])
-        self.assertEqual(self.flow(page), "sent")
-        self.assertEqual(page.pressed, ["a:Connect"])
-        self.assertIs(page.filter_text, PlaywrightDriver.DIRECT_CONNECT_RE)
+        for control in ("a:Connect", "div[role=button]:Connect"):
+            with self.subTest(control=control):
+                page = self.FakePage([control])
+                self.assertEqual(self.flow(page), "sent")
+                self.assertEqual(page.pressed, [control])
+                self.assertIs(page.filter_text, PlaywrightDriver.DIRECT_CONNECT_RE)
 
     def test_no_direct_controls_returns_none_without_pressing(self):
         page = self.FakePage([])
@@ -1627,10 +1629,16 @@ class DirectConnect(unittest.TestCase):
         self.assertEqual(page.pressed, [])
 
     def test_unverified_dialog_stops_without_another_press(self):
-        page = self.FakePage(["a:Connect", "button:Connect"], dialog=False)
+        page = self.FakePage(["a:Connect"], dialog=False)
         with self.assertRaises(UncertainSend):
             self.flow(page)
         self.assertEqual(page.pressed, ["a:Connect"])
+
+    def test_multiple_visible_target_connects_are_ambiguous_before_any_press(self):
+        page = self.FakePage(["a:Connect", "button:Connect"])
+        with self.assertRaises(UnexpectedUI):
+            self.flow(page)
+        self.assertEqual(page.pressed, [])
 
 
 class StepVerify(unittest.TestCase):

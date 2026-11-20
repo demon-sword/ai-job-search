@@ -76,6 +76,17 @@ per-file diff commands.
 
 ### Fixed
 
+- **LinkedIn target-card control binding** - real sanitized current-layout
+  fixtures exposed an identity/Contact-info fragment being mistaken for the
+  complete profile card. Bind one canonical target heading to its structural
+  profile section and own action group; exclude sidebar/sticky controls and
+  retain accessible-identity checks. Card-scoped hydration replaces body-name
+  sleeps. Unknown/inaccessible controls cannot become page-wide `follow_only`;
+  every pre-action failure saves sanitized counts, complete card DOM and a
+  screenshot. Explicit evidence-backed reclassification preserves original
+  audit/backups and never sends. Existing acknowledgement, durable accounting,
+  interruption, quota, pacing and login safeguards remain unchanged.
+
 - **LinkedIn invitation outcomes and interruption accounting** - bind
   controls/receipts to the target profile; recognize direct-Connect success
   without a modal and require positive modal-Send acknowledgement. Never
