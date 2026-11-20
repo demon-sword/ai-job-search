@@ -47,5 +47,19 @@
       "source_sha256": "94d70b37f35aa79a6971ce52bc62d2e97fae09cc6e782b94f4f33b4e3d2472fc",
       "fixture_sha256": "0b92bf421b683239603ead891edb6ccbd4c8459981183cad4f60c84b90ce767d"
     }
+  ],
+  "receipt_captures": [
+    {
+      "candidate": {
+        "name": "Jeffry Issac",
+        "profile_url": "https://www.linkedin.com/in/jeffry-issac/"
+      },
+      "captured_at": "2026-11-21T01:31:35+05:30",
+      "fixture": "jeffry-issac-pending.html",
+      "source_sha256": "4e27c3d4f17191c385abea4d5dbd1154416b26f004ca77cf2fb5060564b320ad",
+      "fixture_sha256": "4e27c3d4f17191c385abea4d5dbd1154416b26f004ca77cf2fb5060564b320ad",
+      "receipts": ["Invitation sent to Jeffry."],
+      "note": "Unmodified sanitized complete section from the final uncertain capture. Screenshot/JSON independently show the target long Pending label. No menu DOM survived acceptance; menu test additions are explicitly synthetic counterfactuals."
+    }
   ]
 }

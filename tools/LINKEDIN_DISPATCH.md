@@ -93,6 +93,14 @@ no-op, while changed content or evidence under the same id refuses.
 Keep the backup and captures. Uncertain records remain reserved and
 ineligible for another batch even after importing the manifest.
 
+When preserved affirmative evidence resolves an existing reservation to
+`sent`, use its original attempt timestamp for `ts`, not the reconciliation
+time. This converts reserved usage to confirmed usage without freeing a
+quota slot or counting the invitation twice. The target's exact long Pending
+accessible label is affirmative when its verified action card and full name
+match; a first-name toast alone is not. Never press Pending/Withdraw or
+Connect/Send again to obtain proof.
+
 For a proven target-boundary misclassification, `outcome: unknown_controls`
 may explicitly reclassify a matching `follow_only` person/attempt only when
 no sending actions or confirmed send were recorded. Supply the actual

@@ -221,6 +221,142 @@ class TargetCardDOM(unittest.TestCase):
         self.assertEqual(self.driver._direct_connect_flow(page, CANDIDATE, None, "jeffry"), "sent")
         self.assertEqual(self.actions, ["possible send"])
 
+    def test_saved_long_pending_receipt_needs_no_first_name_toast_or_press(self):
+        html = VISIBILITY + "<main>" + (FIXTURES / "jeffry-issac-pending.html").read_text() + "</main>"
+        for toast in ("", '<div role="status">Invitation sent to Jeffry.</div>'):
+            with self.subTest(toast=toast):
+                page = self.page(html + toast)
+                state = self.driver._profile_read(page, CANDIDATE)
+                self.assertTrue(state["verified"])
+                self.assertEqual(bot.terminal_outcome(state, CANDIDATE, after_action=False), "already_pending")
+                self.assertEqual(bot.terminal_outcome(state, CANDIDATE, after_action=True), "sent")
+                page.close()
+        self.assertEqual(self.actions, [])
+
+    def test_long_pending_is_exact_person_and_action_group_only(self):
+        label = "Pending, click to withdraw invitation sent to Jeffry Issac"
+        for wrong in ("Jeffry", "Jeffry Issac Jr.", "Someone Else"):
+            with self.subTest(wrong=wrong):
+                page = self.page(card(
+                    actions=f'<a aria-label="{label.replace("Jeffry Issac", wrong)}">Pending</a><button>Message</button><button>More</button>',
+                    extra=f'<aside><a aria-label="{label}">Pending</a></aside><div role="status">Invitation sent to Jeffry.</div>'))
+                state = self.driver._profile_read(page, CANDIDATE)
+                self.assertFalse(state["pending"])
+                self.assertIsNone(bot.terminal_outcome(state, CANDIDATE, after_action=True))
+                page.close()
+        page = self.page(card(extra=f'<aside><a aria-label="{label}">Pending</a></aside>'))
+        self.assertFalse(self.driver._profile_read(page, CANDIDATE)["pending"])
+        self.assertEqual(self.actions, [])
+
+    def test_delayed_long_pending_acknowledges_once_but_first_name_toast_alone_does_not(self):
+        for acknowledgement in (True, False):
+            with self.subTest(acknowledgement=acknowledgement):
+                self.actions.clear()
+                page = self.page()
+                page.evaluate('''ack => {
+                  window.connectPresses=0;
+                  document.querySelector('#actions a').addEventListener('click', e => {
+                    e.preventDefault(); window.connectPresses++;
+                    const toast=document.createElement('div'); toast.setAttribute('role','status');
+                    toast.textContent='Invitation sent to Jeffry.'; document.body.append(toast);
+                    if(ack) setTimeout(() => {
+                      e.target.textContent='Pending';
+                      e.target.setAttribute('aria-label','Pending, click to withdraw invitation sent to Jeffry Issac');
+                    }, 80);
+                  });
+                }''', acknowledgement)
+                if acknowledgement:
+                    self.assertEqual(self.driver._direct_connect_flow(page, CANDIDATE, None, "jeffry"), "sent")
+                else:
+                    with self.assertRaises(bot.UncertainSend):
+                        self.driver._direct_connect_flow(page, CANDIDATE, None, "jeffry")
+                self.assertEqual(page.evaluate("window.connectPresses"), 1)
+                self.assertEqual(self.actions, ["possible send"])
+                page.close()
+
+    def menu_page(self, entries, *, second_menu="", candidate=None):
+        # Actual captured Vinaayak section, SYNTHETIC menu: acceptance retained
+        # names/screenshot, not exact menu markup. Never claim byte-faithful replay.
+        candidate = candidate or {"name": "Vinaayak O.", "profile_url": "https://www.linkedin.com/in/vinayak-ojha/"}
+        html = VISIBILITY + "<main>" + (FIXTURES / "vinayak-ojha.html").read_text() + "</main>"
+        page = self.page(html + f'<div id="menu" role="menu" hidden>{entries}</div>' + second_menu,
+                         candidate["profile_url"])
+        more = self.driver._more_buttons(page, candidate)
+        more.evaluate('''button => {
+          window.entryPresses=[];
+          button.addEventListener('click', () => {
+            const menu=document.querySelector('#menu'); menu.hidden=!menu.hidden;
+          });
+          document.addEventListener('keydown', e => {
+            if(e.key==='Escape') document.querySelector('#menu').hidden=true;
+          });
+          document.querySelectorAll('#menu li').forEach(entry => {
+            entry.addEventListener('click', () => {
+              window.entryPresses.push(entry.getAttribute('aria-label') || entry.textContent);
+              const pending=document.createElement('a'); pending.textContent='Pending';
+              pending.setAttribute('aria-label','Pending, click to withdraw invitation sent to Vinaayak O.');
+              button.parentElement.append(pending);
+              document.querySelector('#menu').hidden=true;
+            });
+            entry.addEventListener('keydown', e => {if(e.key==='Enter') entry.click()});
+          });
+        }''')
+        return page, candidate
+
+    def test_exact_accessible_invitation_entry_and_plain_li_reach_only_target_once(self):
+        for row in ('<li aria-label="Invite Vinaayak O. to connect" tabindex="0"><span>Connect</span></li>',
+                    '<li tabindex="0">Connect</li>'):
+            with self.subTest(row=row):
+                self.actions.clear()
+                page, candidate = self.menu_page(row)
+                with patch.object(page, "wait_for_timeout", return_value=None):
+                    self.assertEqual(self.driver._more_connect_flow(page, [0], candidate, None), "sent")
+                self.assertEqual(page.evaluate("window.entryPresses"),
+                                 ["Invite Vinaayak O. to connect" if "aria-label" in row else "Connect"])
+                self.assertEqual(self.actions, ["possible send"])
+                page.close()
+
+    def test_ambiguous_wrong_person_destructive_and_note_only_menus_never_press(self):
+        named = '<li aria-label="Invite Vinaayak O. to connect"><span>Connect</span></li>'
+        cases = [
+            (named + named, ""),
+            (named, '<div role="menu"><li>Connect</li></div>'),
+            ('<li aria-label="Invite Someone Else to connect"><span>Connect</span></li>', ""),
+            ('<li>Withdraw invitation</li><li>Follow</li><li>Report Vinaayak</li><li>Block Vinaayak</li>', ""),
+            ('<li aria-label="Invite Vinaayak O. to connect">Withdraw invitation</li>', ""),
+            ('<li aria-label="Invite Vinaayak O. to connect">Send a note</li>', ""),
+            ('<li aria-disabled="true">Connect</li>', ""),
+            ('<li>Send a note to Vinaayak O.</li>', ""),
+            ("", '<aside><div role="menu"><li>Connect</li></div></aside>'),
+        ]
+        for row, extra in cases:
+            with self.subTest(row=row, extra=extra):
+                page, candidate = self.menu_page(row, second_menu=extra)
+                with patch.object(page, "wait_for_timeout", return_value=None):
+                    result = self.driver._more_connect_flow(page, [0], candidate, None)
+                self.assertIn(result, (bot.MENU_MISSED, bot.DIALOG_MISSED))
+                self.assertEqual(page.evaluate("window.entryPresses"), [])
+                self.assertEqual(self.actions, [])
+                page.close()
+
+    def test_hidden_named_copy_does_not_mask_visible_connect(self):
+        page, candidate = self.menu_page(
+            '<li tabindex="0">Connect</li>',
+            second_menu='<div role="menu" hidden><li aria-label="Invite Vinaayak O. to connect">Connect</li></div>')
+        with patch.object(page, "wait_for_timeout", return_value=None):
+            self.assertEqual(self.driver._more_connect_flow(page, [0], candidate, None), "sent")
+        self.assertEqual(page.evaluate("window.entryPresses"), ["Connect"])
+        self.assertEqual(self.actions, ["possible send"])
+
+    def test_keyboard_fallback_closes_open_menu_before_reexpanding(self):
+        page, candidate = self.menu_page(
+            '<li aria-label="Invite Vinaayak O. to connect" tabindex="0"><span>Connect</span></li>')
+        with patch.object(page, "wait_for_timeout", return_value=None), \
+                patch.object(self.driver, "_menu_entry_box", return_value=None):
+            self.assertEqual(self.driver._more_connect_flow(page, [0], candidate, None), "sent")
+        self.assertEqual(page.evaluate("window.entryPresses"), ["Invite Vinaayak O. to connect"])
+        self.assertEqual(self.actions, ["possible send"])
+
 
 if __name__ == "__main__":
     unittest.main()
