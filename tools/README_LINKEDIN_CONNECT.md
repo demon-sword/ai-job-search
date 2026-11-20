@@ -88,6 +88,20 @@ invites. `run --from-ledger` composes with `--candidates`.
 | No credentials in repo/logs | There is no `--password`/`--token` flag at all. Login state lives in a persistent browser profile outside the repo (`~/.linkedin-connect-bot/`). A scrubber redacts credential-looking text before it can reach logs. |
 | Dedupe and reconciliation | Invited/connected/terminal and unresolved targets cannot be resent. An unresolved attempt blocks live passes. Explicit, evidence-backed `reconcile` previews by default, backs up before `--apply`, and refuses conflicting replay. See `LINKEDIN_DISPATCH.md`. |
 
+The live sender waits for the exact canonical URL and one target heading
+inside its structural profile section, with that section's own action
+group. Nested identity/Contact-info fragments are not action-card roots.
+Sidebar, activity and sticky duplicate controls cannot supply Connect,
+More, Pending, degree or Follow classifications. Accessible target identity
+remains required. An unsupported boundary, hydration timeout or inaccessible
+More is diagnostic unknown, never a sticky page-wide `follow_only`.
+
+Every pre-action failure is captured before closing the page: sanitized
+final URL/readiness and heading/root/control counts, screenshot, and the
+complete minimal structural card DOM. Captures are local operational
+evidence, not permission to retry. No change to positive acknowledgements,
+durable reservations, interruption recovery, quotas or pacing is implied.
+
 ## Setup for live sending
 
 ```bash

@@ -238,6 +238,53 @@ b.run_queue([%r], %r, b.blank_ledger(), pathlib.Path(%r), live=True, cap=20,
         self.assertEqual(saved["persons"]["in:rangansen"]["status"], "invited")
         self.assertEqual(saved["attempts"]["in:second"]["status"], "uncertain")
 
+    def test_explicit_follow_only_reclassification_preserves_history_and_never_sends(self):
+        evidence = self.state / "target-card.json"
+        evidence.write_text('{"verified_card": true, "controls": ["More"]}')
+        key = "in:rangansen"
+        self.ledger["persons"][key] = dict(CANDIDATE, status=bot.FOLLOW_ONLY)
+        self.ledger["attempts"][key] = dict(status=bot.FOLLOW_ONLY, actions=0, reserved_ts=NOW)
+        bot.save_ledger(self.state / bot.LEDGER_NAME, self.ledger)
+        original = b'{"result":"follow_only","profile":"in:rangansen"}\n'
+        self.audit.write_bytes(original)
+        manifest = {"id": "target-card-correction", "reason": "Proven wrong control boundary",
+                    "records": [{"candidate": CANDIDATE, "outcome": bot.UNKNOWN_CONTROLS,
+                                 "ts": NOW, "evidence": [str(evidence)]}]}
+        preview = bot.reconcile_records(self.state, manifest)
+        self.assertFalse(preview["applied"])
+        self.assertEqual(bot.load_ledger(self.state / bot.LEDGER_NAME)["persons"][key]["status"],
+                         bot.FOLLOW_ONLY)
+        with patch.object(bot.PlaywrightDriver, "start", side_effect=AssertionError("no browser")):
+            result = bot.reconcile_records(self.state, manifest, apply=True)
+            self.assertTrue(bot.reconcile_records(self.state, manifest, apply=True)["already_applied"])
+        saved = bot.load_ledger(self.state / bot.LEDGER_NAME)
+        self.assertEqual(saved["persons"][key]["status"], "retryable")
+        self.assertEqual(saved["attempts"][key]["status"], bot.UNKNOWN_CONTROLS)
+        self.assertEqual(saved["sends"], [])
+        self.assertTrue(self.audit.read_bytes().startswith(original))
+        backup = Path(result["backup"])
+        self.assertEqual((backup / bot.AUDIT_NAME).read_bytes(), original)
+        self.assertEqual(json.loads((backup / bot.LEDGER_NAME).read_text())["persons"][key]["status"],
+                         bot.FOLLOW_ONLY)
+
+    def test_follow_only_correction_refuses_possible_actions_and_other_statuses(self):
+        evidence = self.state / "target-card.json"
+        evidence.write_text("{}")
+        for status, actions, name in [(bot.FOLLOW_ONLY, 1, CANDIDATE["name"]),
+                                      ("uncertain", 0, CANDIDATE["name"]),
+                                      (bot.FOLLOW_ONLY, 0, "Wrong Person")]:
+            with self.subTest(status=status, actions=actions, name=name):
+                key = "in:rangansen"
+                self.ledger["persons"][key] = dict(CANDIDATE, status=status, name=name)
+                self.ledger["attempts"][key] = dict(status=status, actions=actions)
+                bot.save_ledger(self.state / bot.LEDGER_NAME, self.ledger)
+                manifest = {"id": "refused-correction", "reason": "Cannot prove non-sending failure",
+                            "records": [{"candidate": CANDIDATE, "outcome": bot.UNKNOWN_CONTROLS,
+                                         "ts": NOW, "evidence": [str(evidence)]}]}
+                with self.assertRaises(ValueError):
+                    bot.reconcile_records(self.state, manifest, apply=True)
+                self.assertFalse((self.state / "backups").exists())
+
     def test_reconciliation_is_auditable_idempotent_and_keeps_uncertain_reserved(self):
         evidence = self.state / "receipt.txt"
         evidence.write_text("Invitation sent to Rangan.\nRangan Sen\nPending\n")

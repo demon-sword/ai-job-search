@@ -226,37 +226,132 @@ def is_first_degree_text(text: str) -> bool:
     return _FIRST_DEGREE_RE.search(have) is not None
 
 
-# Read only the target's identity card, never sidebar suggestions or the body.
-# The nearest ancestor containing this exact heading and Contact info bounds
-# both the controls we press and the Pending/degree state we accept.
+# Real Nov-21 captures have nested identity/contact and sibling actions inside
+# one profile section. Bind that structural section first; never grow a root
+# until a Connect appears. Its sole More + Message group bounds all controls.
 TARGET_PROFILE_JS = r"""(candidate) => {
     const norm = s => (s || '').replace(/\s+/g, ' ').trim();
     const visible = e => !!(e && e.getClientRects().length);
-    const main = document.querySelector('main, [role="main"]');
-    if (!main) return null;
-    const heading = [...main.querySelectorAll('h1,h2,[role="heading"]')]
-        .find(e => visible(e) && norm(e.innerText) === norm(candidate.name));
-    if (!heading) return null;
-    let card = heading.parentElement;
-    while (card && card !== main && ![...card.querySelectorAll('a,button')]
-            .some(e => visible(e) && norm(e.innerText) === 'Contact info')) {
-        card = card.parentElement;
+    const name = e => {
+        const by = e.getAttribute('aria-labelledby');
+        const labelled = by && by.split(/\s+/).map(id =>
+            document.getElementById(id)?.innerText || '').join(' ');
+        return norm(labelled || e.getAttribute('aria-label') || e.innerText);
+    };
+    const path = e => {
+        const parts = [];
+        for (let n = e; n && n.parentElement; n = n.parentElement)
+            parts.unshift(n.tagName.toLowerCase() + ':nth-child(' +
+                ([...n.parentElement.children].indexOf(n) + 1) + ')');
+        return 'html > ' + parts.join(' > ');
+    };
+    const sanitizedHTML = card => {
+        const clone = card.cloneNode(true);
+        const originals = [card, ...card.querySelectorAll('*')];
+        const copies = [clone, ...clone.querySelectorAll('*')];
+        const allow = new Set(['role','aria-label','aria-labelledby','aria-expanded',
+            'aria-disabled','aria-controls','id','href','title','disabled']);
+        copies.forEach((e, i) => {
+            for (const a of [...e.attributes]) if (!allow.has(a.name)) e.removeAttribute(a.name);
+            e.setAttribute('data-readonly-visible', visible(originals[i]) ? 'true' : 'false');
+            if (e.hasAttribute('href')) {
+                try { const u = new URL(e.getAttribute('href'), location.href);
+                    e.setAttribute('href', u.origin + u.pathname);
+                } catch { e.removeAttribute('href'); }
+            }
+        });
+        clone.querySelectorAll('script,style,iframe,input,textarea,form,img,svg,video')
+            .forEach(e => e.remove());
+        return clone.outerHTML;
+    };
+    const excluded = e => {
+        if (e.closest('aside,[role="complementary"],[role="dialog"],[role="menu"]')) return true;
+        for (let n = e; n && n !== document.body; n = n.parentElement) {
+            const position = getComputedStyle(n).position;
+            if (position === 'fixed' || position === 'sticky') return true;
+        }
+        return false;
+    };
+    const headings = root => [...root.querySelectorAll('h1,h2,[role="heading"]')]
+        .filter(e => visible(e) && !excluded(e));
+    const controls = root => [...root.querySelectorAll('button,a,[role="button"]')]
+        .filter(e => visible(e) && !excluded(e));
+    const result = {profile_url: location.origin + location.pathname,
+        ready_state: document.readyState, title: document.title,
+        name: null, verified: false, reason: 'missing_main',
+        root_count: 0, heading_count: 0, action_group_count: 0,
+        card_control_count: 0, control_count: 0, more_count: 0, controls: []};
+    const main = document.querySelector('main,[role="main"]');
+    if (!main) return result;
+    const matches = headings(main).filter(e => norm(e.innerText) === norm(candidate.name));
+    result.heading_count = matches.length;
+    result.reason = matches.length > 1 ? 'ambiguous_heading' : 'missing_heading';
+    if (matches.length !== 1) {
+        if (candidate.diagnostic) {
+            const sections = [...new Set((matches.length ? matches : headings(main).slice(0, 1))
+                .map(e => e.closest('section')).filter(e => e && e !== main))];
+            result.html = sections.map(sanitizedHTML).join('\n');
+        }
+        return result;
     }
-    if (!card || card === main) return null;
-    const controls = [...card.querySelectorAll('button,a,[role="button"]')]
-        .filter(visible).map(e => norm(e.getAttribute('aria-label') || e.innerText));
-    const parts = [];
-    for (let node = card; node && node !== document.documentElement; node = node.parentElement) {
-        const index = [...node.parentElement.children].indexOf(node) + 1;
-        parts.unshift(node.tagName.toLowerCase() + ':nth-child(' + index + ')');
+    const heading = matches[0];
+    // The nearest semantic section is the boundary, even when not ready.
+    // Never climb past it to consume Activity, recommendations or main.
+    const card = heading.closest('section');
+    result.heading_name = norm(heading.innerText);
+    result.heading_accessible_name = name(heading);
+    if (!card || card === main || !main.contains(card)) {
+        result.reason = 'unsupported_card';
+        return result;
     }
-    const text = norm(card.innerText);
-    return {profile_url: location.href, name: norm(heading.innerText),
-        selector: 'html > ' + parts.join(' > '),
-        pending: controls.some(s => /^(Pending|Invitation pending)$/i.test(s)),
-        first_degree: /·\s*1st\b/.test(text),
-        receipts: [...document.querySelectorAll('[role="alert"],[role="status"],.artdeco-toast-item')]
-            .filter(visible).map(e => norm(e.innerText))};
+    result.root_count = 1;
+    result.selector = path(card);
+    const own = controls(card).filter(e => e.closest('section') === card);
+    const more = own.filter(e => name(e) === 'More' &&
+        (e.tagName === 'BUTTON' || e.getAttribute('role') === 'button'));
+    result.card_control_count = own.length;
+    result.more_count = more.length;
+    result.reason = 'incomplete_actions';
+    if (candidate.diagnostic) {
+        result.global_control_count = [...document.querySelectorAll('button,a,[role="button"]')]
+            .filter(visible).length;
+        result.card_controls = own.map(e => ({name: name(e), text: norm(e.innerText)}));
+        result.html = sanitizedHTML(card);
+    }
+    const contact = own.filter(e => norm(e.innerText) === 'Contact info' &&
+        e.tagName === 'A' && new URL(e.href).pathname.replace(/\/$/, '') ===
+            location.pathname.replace(/\/$/, '') + '/overlay/contact-info');
+    if (headings(card).length !== 1 || contact.length !== 1) {
+        result.reason = 'ambiguous_card_identity';
+        return result;
+    }
+    if (more.length !== 1) return result;
+    // Current action-row wrappers have no role/classes stable across builds.
+    // The innermost More+Message group is independent of Connect availability.
+    let group = more[0].parentElement;
+    while (group && group !== card && !controls(group).some(e =>
+            /^Message(?:\s|$)/i.test(name(e)))) group = group.parentElement;
+    if (!group || group === card || headings(group).length ||
+            group.querySelector('aside,[role="complementary"],section') ||
+            controls(group).some(e => norm(e.innerText) === 'Contact info')) return result;
+    const actions = controls(group);
+    if (actions.some(e => e.closest('section') !== card)) return result;
+    result.action_group_count = 1;
+    result.action_selector = path(group);
+    result.controls = actions.map(e => name(e));
+    result.control_count = actions.length;
+    result.pending = result.controls.some(s => /^(Pending|Invitation pending)$/i.test(s));
+    // Only the identity/contact region can supply degree, never nested content.
+    let identity = heading.parentElement;
+    while (identity && identity !== card && !identity.contains(contact[0]))
+        identity = identity.parentElement;
+    result.first_degree = !!identity && /·\s*1st\b/.test(norm(identity.innerText));
+    result.receipts = [...document.querySelectorAll('[role="alert"],[role="status"],.artdeco-toast-item')]
+        .filter(visible).map(e => norm(e.innerText));
+    result.name = norm(heading.innerText);
+    result.verified = true;
+    result.reason = 'ready';
+    return result;
 }"""
 
 
@@ -1164,56 +1259,40 @@ class PlaywrightDriver(InviteDriver):
 
     def send_invite(self, candidate: dict, note: str | None) -> str:
         page = self._ctx.new_page()
+        outcome = None
+        reason = UNKNOWN_CONTROLS
         try:
             try:
                 page.goto(candidate["profile_url"], wait_until="domcontentloaded", timeout=20000)
-                page.wait_for_timeout(2500)
             except Exception as exc:
                 raise UnexpectedUI(f"profile page did not load: {exc}") from exc
-            stop = self._page_state(page)
-            if stop is not None:
-                raise stop
             if self.before_action is None:
                 raise ValueError("live invitations require a durable attempt reservation")
-            known = terminal_outcome(self._profile_read(page, candidate), candidate, after_action=False)
-            if known is not None:
-                return known
+            state = self._await_target_card(page, candidate)
+            if state is None:
+                return UNKNOWN_CONTROLS
+            outcome = terminal_outcome(state, candidate, after_action=False)
+            if outcome is not None:
+                return outcome
             slug = self._slug(candidate)
-            # A page-covering obstruction (dialog overlay or timed ad
-            # lightbox) swallows entry clicks while reads see only its own
-            # buttons: dismiss it before any entry control is touched, else
-            # block for this run. Timed popups can appear mid-flow, so the
-            # same check re-runs before every More expand (shared counter).
             obstruction = {"sightings": 0}
             if not self._dismiss_overlay(page, slug, obstruction):
-                return OVERLAY_BLOCKED
-            # The scan budgets attempts; actual controls are located only
-            # inside the URL/name-verified target card.
-            try:
-                page.wait_for_function(
-                    "(name) => (document.body ? document.body.innerText : '')"
-                    ".includes(name || 'Contact info')",
-                    arg=candidate.get("name") or "",
-                    timeout=20000,
-                )
-                page.wait_for_timeout(1500)
-                acc_names = page.evaluate(BUTTON_NAMES_JS) or []
-            except Exception as exc:
-                raise UnexpectedUI(f"profile content never rendered: {exc}") from exc
-            scan = scan_entry_controls(acc_names)
+                outcome = OVERLAY_BLOCKED
+                return outcome
             outcome = self._direct_connect_flow(page, candidate, note, slug)
             if outcome is not None:
                 return outcome
-            # No verified Connect: a follow-only profile may still invite
-            # via More -> Connect; anything else is an unknown-controls skip.
-            more_result = self._more_connect_flow(page, scan["more"], candidate, note,
-                                                   obstruction)
-            if more_result is not None:
-                return more_result
-            if scan["follow"]:
-                return FOLLOW_ONLY
-            return UNKNOWN_CONTROLS
+            # Only this target's More controls budget expansion. Neither
+            # page-wide Follow nor an inaccessible More proves unavailability.
+            scan = scan_entry_controls(state["controls"])
+            outcome = self._more_connect_flow(page, scan["more"], candidate, note, obstruction)
+            return outcome or UNKNOWN_CONTROLS
+        except BaseException as exc:
+            reason = f"{type(exc).__name__}: {exc}"
+            raise
         finally:
+            if outcome not in ("sent", "already_pending", "already_connected"):
+                self._capture_target_failure(page, candidate, outcome or reason)
             try:
                 page.close()
             except Exception:
@@ -1373,6 +1452,36 @@ class PlaywrightDriver(InviteDriver):
         except Exception:
             pass
 
+    def _capture_target_failure(self, page, candidate: dict, reason: str) -> None:
+        """Capture complete structural card evidence before a non-sending close.
+
+        Screenshot/read failures are recorded independently; neither can hide the
+        other. No credentials, URL query parameters or page-wide HTML are saved.
+        """
+        if self._capture_dir is None:
+            return
+        stamp = re.sub(r"[^0-9]", "", utcnow_iso())
+        base = self._capture_dir / f"{stamp}_{self._slug(candidate)}_preaction"
+        try:
+            base.parent.mkdir(parents=True, exist_ok=True)
+            url = urlparse(page.url)
+            data = {"reason": reason, "final_url": url._replace(query="", fragment="").geturl()}
+            try:
+                data["target"] = page.evaluate(TARGET_PROFILE_JS, dict(candidate, diagnostic=True))
+                html = data["target"].pop("html", "")
+                if html:
+                    base.with_suffix(".html").write_text(scrub(html), encoding="utf-8")
+            except Exception as exc:
+                data["read_error"] = scrub(str(exc))
+            try:
+                page.screenshot(path=str(base.with_suffix(".png")))
+            except Exception as exc:
+                data["screenshot_error"] = scrub(str(exc))
+            base.with_suffix(".json").write_text(
+                scrub(json.dumps(data, ensure_ascii=False, indent=2)), encoding="utf-8")
+        except Exception:
+            pass
+
     def _menu_entry_locator(self, page, entry_name: str):
         """The entry inside the open dropdown only - never a page-wide
         text match, which could resolve to another card's control."""
@@ -1448,17 +1557,48 @@ class PlaywrightDriver(InviteDriver):
         return page.evaluate(TARGET_PROFILE_JS, candidate)
 
     def _target_card(self, page, candidate: dict):
+        """Verify the complete card and accessible identity; return its own actions."""
         state = self._profile_read(page, candidate)
-        if (not isinstance(state, dict) or not state.get("selector")
+        if (not isinstance(state, dict) or not state.get("verified")
+                or not state.get("selector") or not state.get("action_selector")
                 or state.get("name") != candidate.get("name")
                 or canonical_key(state.get("profile_url", "")) != canonical_key(candidate["profile_url"])):
             raise UnexpectedUI("could not bind controls to the target profile card")
-        return page.locator(state["selector"]).filter(
+        card = page.locator(state["selector"]).filter(
             has=page.get_by_role("heading", name=candidate["name"], exact=True))
+        actions = page.locator(state["action_selector"])
+        if card.count() != 1 or actions.count() != 1:
+            raise UnexpectedUI("target card accessible identity or action group is ambiguous")
+        return actions
+
+    def _await_target_card(self, page, candidate: dict, timeout: float = 10.0):
+        """Bounded hydration of the verified card, with challenge checks each poll."""
+        end = time.monotonic() + timeout
+        while True:
+            stop = self._page_state(page)
+            if stop is not None:
+                raise stop
+            try:
+                if canonical_key(page.url) != canonical_key(candidate["profile_url"]):
+                    raise UnexpectedUI("profile navigation no longer identifies the target")
+                state = self._profile_read(page, candidate)
+                if state and state.get("reason") in ("ambiguous_heading", "ambiguous_card_identity"):
+                    raise UnexpectedUI("target profile identity is ambiguous")
+                if state and state.get("verified"):
+                    self._target_card(page, candidate)
+                    return state
+            except InviteStop:
+                raise
+            except Exception:
+                # Mechanical/hydration reads may settle; never classify them Follow.
+                pass
+            if time.monotonic() >= end:
+                return None
+            page.wait_for_timeout(250)
 
     def _direct_connect_controls(self, page, candidate: dict):
         return self._target_card(page, candidate).locator(
-            'button, a, [role="button"]').filter(has_text=self.DIRECT_CONNECT_RE)
+            'button:visible, a:visible, [role="button"]:visible').filter(has_text=self.DIRECT_CONNECT_RE)
 
     def _direct_connect_flow(self, page, candidate: dict, note: str | None, slug: str):
         """Only the target card's Connect controls are eligible for a press."""
@@ -1467,8 +1607,10 @@ class PlaywrightDriver(InviteDriver):
         except InviteStop:
             raise
         except Exception:
-            return None
-        for pos in range(min(total, 3)):
+            return UNKNOWN_CONTROLS
+        if total > 1:
+            raise UnexpectedUI("multiple target Connect controls")
+        for pos in range(total):
             outcome = self._press_connect_and_send(
                 page,
                 lambda k=pos: self._direct_connect_controls(page, candidate).nth(k).click(timeout=10000),
@@ -2551,7 +2693,7 @@ def reconcile_records(state_dir: Path, manifest: dict, *, apply: bool = False) -
                 raise ValueError(f"duplicate reconciliation target: {key}")
             seen.add(key)
             outcome = row["outcome"]
-            if outcome not in ("sent", "uncertain", "connected", "not_sent"):
+            if outcome not in ("sent", "uncertain", "connected", "not_sent", UNKNOWN_CONTROLS):
                 raise ValueError(f"unsupported reconciliation outcome: {outcome}")
             when = datetime.fromisoformat(row["ts"])
             if when.tzinfo is None:
@@ -2585,11 +2727,17 @@ def reconcile_records(state_dir: Path, manifest: dict, *, apply: bool = False) -
                 raise ValueError(f"legacy invited target needs historical accounting review: {key}")
             if outcome == "not_sent" and prior.get("status") not in ("attempting", "uncertain", "not_sent"):
                 raise ValueError(f"not_sent only resolves an unresolved attempt: {key}")
+            if outcome == UNKNOWN_CONTROLS and (
+                    known.get("status") != FOLLOW_ONLY or prior.get("status") != FOLLOW_ONLY
+                    or prior.get("actions", 0) != 0 or counted
+                    or known.get("name") != row["candidate"].get("name")):
+                raise ValueError(f"unknown_controls only reclassifies a matching non-sending follow_only record: {key}")
             if outcome == "sent" and not counted:
                 ledger["sends"].append(ts)
                 counted = ts
             status = {"sent": "invited", "uncertain": "uncertain",
-                      "connected": "connected", "not_sent": "retryable"}[outcome]
+                      "connected": "connected", "not_sent": "retryable",
+                      UNKNOWN_CONTROLS: "retryable"}[outcome]
             ledger["persons"][key] = {**known, **row["candidate"], "status": status, "last_ts": ts}
             ledger["attempts"][key] = dict(
                 prior, status="already_connected" if outcome == "connected" else outcome,
