@@ -340,7 +340,9 @@ TARGET_PROFILE_JS = r"""(candidate) => {
     result.action_selector = path(group);
     result.controls = actions.map(e => name(e));
     result.control_count = actions.length;
-    result.pending = result.controls.some(s => /^(Pending|Invitation pending)$/i.test(s));
+    const pendingLabel = norm('Pending, click to withdraw invitation sent to ' + candidate.name).toLowerCase();
+    result.pending = result.controls.some(s => /^(Pending|Invitation pending)$/i.test(s) ||
+        s.toLowerCase() === pendingLabel);
     // Only the identity/contact region can supply degree, never nested content.
     let identity = heading.parentElement;
     while (identity && identity !== card && !identity.contains(contact[0]))
@@ -489,10 +491,12 @@ MORE_MENU_READ_JS = (
     # how a stray quote once shipped a reader that threw on every page.
     "Array.from(new Set(Array.from(document.querySelectorAll('"
     + MORE_MENU_ITEM_SELECTOR
-    + "')).map(e => (e.getAttribute('aria-label') || e.innerText || '').trim())"
+    + "')).filter(e => e.getClientRects().length)"
+      ".map(e => (e.getAttribute('aria-label') || e.innerText || '').trim())"
       ".filter(Boolean).concat(Array.from(document.querySelectorAll('"
     + MORE_MENU_CONTAINER_SELECTOR
-    + "')).map(m => m.innerText || '').join('\\n').split('\\n')"
+    + "')).filter(e => e.getClientRects().length)"
+      ".map(m => m.innerText || '').join('\\n').split('\\n')"
       ".map(s => s.trim()).filter(Boolean))))"
 )
 
@@ -629,7 +633,7 @@ def pick_invite_entry(names, candidate_name: str, bare_ok: bool = False) -> str 
     actual overflow wording. The default stays strict: a bare "Connect"
     anywhere else could belong to a suggested profile, and clicking that
     invites a stranger. Returns the observed string verbatim for an
-    exact-text click - never a reconstruction."""
+    exact-name or exact-text resolution inside that dropdown only."""
     want = (candidate_name or "").strip().lower()
     bare = None
     bare_count = 0
@@ -1483,17 +1487,45 @@ class PlaywrightDriver(InviteDriver):
             pass
 
     def _menu_entry_locator(self, page, entry_name: str):
-        """The entry inside the open dropdown only - never a page-wide
-        text match, which could resolve to another card's control."""
-        return page.locator(
-            '[role="menu"], .artdeco-dropdown__content'
-        ).get_by_text(entry_name, exact=True).first
+        """Resolve the reader's exact accessible name OR visible text, uniquely.
+
+        More must expose one visible dropdown. Never take the first of multiple
+        entries/menus, or fall through a wrong-person accessible label to Connect
+        text inside it. Hidden responsive copies cannot authorize a press.
+        """
+        menus = page.locator(MORE_MENU_CONTAINER_SELECTOR).filter(visible=True)
+        if menus.count() != 1:
+            return None
+        if menus.evaluate("e => !!e.closest('aside,[role=\"complementary\"],[role=\"dialog\"]')"):
+            return None
+        entries = menus.get_by_label(entry_name, exact=True).or_(
+            menus.get_by_text(entry_name, exact=True)).filter(visible=True)
+        if entries.count() != 1:
+            return None
+        if not entries.evaluate(r"""(entry, wanted) => {
+            const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+            const text = norm(entry.innerText).replace(/^[^a-z0-9]+/, '');
+            if ((text !== 'connect' && text !== norm(wanted)) ||
+                    entry.closest('[aria-disabled="true"],[disabled]')) return false;
+            for (let e = entry; e && !e.matches('[role="menu"], .artdeco-dropdown__content');
+                    e = e.parentElement) {
+                const by = e.getAttribute('aria-labelledby');
+                const label = (by && by.split(/\s+/).map(id =>
+                    document.getElementById(id)?.innerText || '').join(' ')) ||
+                    e.getAttribute('aria-label');
+                if (label && norm(label) !== norm(wanted)) return false;
+            }
+            return true;
+        }""", entry_name):
+            return None
+        return entries
 
     def _menu_entry_box(self, page, entry_name: str):
         """Viewport box of the dropdown entry, or None when it cannot be
         resolved to exactly one visible target."""
         try:
-            return self._menu_entry_locator(page, entry_name).bounding_box(timeout=5000)
+            target = self._menu_entry_locator(page, entry_name)
+            return target.bounding_box(timeout=5000) if target is not None else None
         except Exception:
             return None
 
@@ -1534,6 +1566,9 @@ class PlaywrightDriver(InviteDriver):
                               note: str | None, slug: str, tag: str):
         """The one allowed fallback: re-open the More, keyboard-focus the
         entry, press Enter. Same asserts and captures as the pointer path."""
+        # A failed pointer resolution may leave More expanded. Close before
+        # reopening, rather than toggling that same menu shut as a "retry".
+        self._escape(page)
         if not self._expand_more(page, pos, candidate):
             return None
         if pick_invite_entry(self._read_menu(page), candidate.get("name") or "",
@@ -1541,8 +1576,10 @@ class PlaywrightDriver(InviteDriver):
             self._capture(page, slug, f"{tag}_remenu", ok=False)
             self._escape(page)
             return None
-        target = self._menu_entry_locator(page, entry_name)
         try:
+            target = self._menu_entry_locator(page, entry_name)
+            if target is None:
+                return None
             target.focus(timeout=10000)
         except Exception:
             return None

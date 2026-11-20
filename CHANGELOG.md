@@ -76,6 +76,17 @@ per-file diff commands.
 
 ### Fixed
 
+- **LinkedIn target-specific Pending receipts and overflow resolution** -
+  recognize the exact full-name Pending/withdraw accessible status only in
+  the verified target action group; first-name toasts remain insufficient.
+  Resolve overflow entries by exact accessible name or text in one visible
+  dropdown, excluding hidden copies, ambiguous/wrong-person/disabled entries
+  and destructive/note-only actions. Close before the non-sending keyboard
+  re-open, never after an uncertain press. Real saved Pending DOM and
+  explicitly synthetic menu counterfactuals cover the boundaries offline;
+  the exact Vinaayak open-menu markup remains uncaptured. No invitation,
+  targeting, quota, pacing or scheduling redesign.
+
 - **LinkedIn target-card control binding** - real sanitized current-layout
   fixtures exposed an identity/Contact-info fragment being mistaken for the
   complete profile card. Bind one canonical target heading to its structural

@@ -1448,6 +1448,7 @@ class MoreMenuLiRead(unittest.TestCase):
                       "the run-path menu read must query li items")
         page = self.FakePage()
         driver = PlaywrightDriver(Path("/tmp/lc-test-profile"))
+        driver._menu_entry_locator = lambda pg, entry: self.FakeClick(pg.clicked, entry)
         driver._page_state = lambda page: None
         driver._target_card = lambda page, candidate: page
         driver._profile_read = lambda page, candidate: dict(candidate, pending=False)
@@ -1777,6 +1778,7 @@ class StepVerify(unittest.TestCase):
 
     def flow(self, page, dialog=True, note=None):
         driver = PlaywrightDriver(Path("/tmp/lc-test-profile"))
+        driver._menu_entry_locator = lambda pg, entry: pg.locator("unused").get_by_text(entry, exact=True).first
         driver._page_state = lambda pg: None
         driver._target_card = lambda pg, candidate: pg
         driver._profile_read = lambda pg, candidate: dict(candidate, pending=False)

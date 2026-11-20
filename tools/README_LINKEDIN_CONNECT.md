@@ -102,6 +102,26 @@ complete minimal structural card DOM. Captures are local operational
 evidence, not permission to retry. No change to positive acknowledgements,
 durable reservations, interruption recovery, quotas or pacing is implied.
 
+Pending recognition includes LinkedIn's exact `Pending, click to withdraw
+invitation sent to <full target name>` accessible label, only in the
+verified target action group. It is read-only status evidence, never a
+Withdraw action. A first-name-only success toast does not confirm delivery.
+
+Overflow entry reads ignore hidden copies. Resolution accepts the exact
+accessible label or exact visible text inside one visible dropdown; it
+never picks the first of ambiguous entries/menus. Wrong-person labels,
+disabled entries and destructive/note-only text cannot supply Connect.
+The non-sending keyboard fallback closes an existing menu before reopening
+it; no fallback occurs after a possibly sending press.
+
+The Nov-21 Vinaayak capture retained a named invitation entry and visible
+Connect, but not its menu DOM. Offline regressions on the captured profile
+section cover both accessible-name/text mismatch and hidden-name duplicates;
+these are counterfactual menu layouts, not a proven unique live cause.
+The permitted read-only revisit found no mounted menu. Exact-layout live
+validation still needs a separately authorized non-sending capture of that
+target's open More menu; no invitation/retry is implied.
+
 ## Setup for live sending
 
 ```bash

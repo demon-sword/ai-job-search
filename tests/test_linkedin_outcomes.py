@@ -317,6 +317,44 @@ b.run_queue([%r], %r, b.blank_ledger(), pathlib.Path(%r), live=True, cap=20,
         with self.assertRaises(ValueError):
             bot.reconcile_records(self.state, manifest, apply=True)
 
+    def test_confirming_existing_reservation_never_frees_or_double_counts_quota(self):
+        key = bot.canonical_key(CANDIDATE["profile_url"])
+        other = "in:someone-else"
+        self.ledger["sends"] = ["2026-11-19T12:00:00+05:30"]
+        self.ledger["persons"][key] = dict(CANDIDATE, status="uncertain")
+        self.ledger["persons"][other] = {"status": "connected"}
+        attempt = dict(status="uncertain", reserved_ts=NOW, last_ts=NOW,
+                       actions=2, run_id="original-run", candidate=CANDIDATE)
+        self.ledger["attempts"][key] = attempt
+        bot.save_ledger(self.state / bot.LEDGER_NAME, self.ledger)
+        original = b'{"result":"uncertain","actions":2}\n'
+        self.audit.write_bytes(original)
+        evidence = self.state / "positive-target-receipt.txt"
+        evidence.write_text("Pending, click to withdraw invitation sent to Rangan Sen")
+        manifest = {"id": "confirm-existing", "reason": "Saved affirmative target receipt",
+                    "records": [{"candidate": CANDIDATE, "outcome": "sent",
+                                 "ts": NOW, "evidence": [str(evidence)]}]}
+        quota_before = bot.quota_today(self.ledger, DAY)
+        result = bot.reconcile_records(self.state, manifest, apply=True)
+        saved_bytes = (self.state / bot.LEDGER_NAME).read_bytes()
+        audit_bytes = self.audit.read_bytes()
+        replay = bot.reconcile_records(self.state, manifest, apply=True)
+        self.assertTrue(replay["already_applied"])
+        self.assertEqual((self.state / bot.LEDGER_NAME).read_bytes(), saved_bytes)
+        self.assertEqual(self.audit.read_bytes(), audit_bytes)
+        saved = bot.load_ledger(self.state / bot.LEDGER_NAME)
+        self.assertEqual(saved["sends"], self.ledger["sends"] + [NOW])
+        self.assertEqual(bot.quota_today(saved, DAY), quota_before)
+        self.assertEqual(saved["persons"][key]["status"], "invited")
+        self.assertEqual(saved["persons"][other], self.ledger["persons"][other])
+        self.assertEqual(saved["attempts"][key]["reserved_ts"], NOW)
+        self.assertEqual(saved["attempts"][key]["counted_ts"], NOW)
+        self.assertEqual(saved["attempts"][key]["actions"], 2)
+        self.assertEqual(saved["attempts"][key]["run_id"], "original-run")
+        self.assertEqual((Path(result["backup"]) / bot.AUDIT_NAME).read_bytes(), original)
+        self.assertTrue(audit_bytes.startswith(original))
+        self.assertNotIn(key, bot.unresolved_attempts(saved))
+
     def test_potential_action_pacing_survives_non_send_label_and_restart(self):
         class Driver:
             def start(self): pass
