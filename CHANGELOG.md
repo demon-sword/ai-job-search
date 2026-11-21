@@ -31,6 +31,9 @@ per-file diff commands.
   --from-ledger` invites the queued profiles. Personal use only: automated
   invites violate LinkedIn's ToS, and discovery raises the risk further.
 
+- LinkedIn `run --goal` accepts repeatable `--exclude PROFILE` options to omit
+  exact targets from one batch without changing their history or quota.
+
 - **`/expand` project and portfolio expansion** (`.claude/commands/expand.md`,
   `tests/test_expand_command.py`) - expands candidate discovery
   to technical projects from public GitHub repositories, extracting structured summaries
