@@ -62,6 +62,14 @@ any replacement. At most 20 candidate decisions and at most `--goal`
 possibly sent invitations are allowed. The batch sends no notes. Both
 phases use one guarded browser and one writer lock.
 
+To omit a specific target for this invocation, repeat `--exclude PROFILE`
+once per target. `PROFILE` is an `in:<slug>` key (e.g. `in:example-person`)
+or a LinkedIn `/in/<slug>` profile URL; URL query strings, fragments, and
+slug case do not change the match. Excluded targets are ignored in the initial
+queue and during discovery/refill, before any profile visit or send attempt.
+This is goal-only and does not modify the targets' history, release holds,
+or free quota. Account-activity and uncertain-send stops still apply.
+
 `--goal` requires `--live`; `discover` and `run --from-ledger` still offer
 standalone previews. A goal dispatch prints confirmed, uncertain, skipped,
 already pending/connected and unattempted queue counts and retains them

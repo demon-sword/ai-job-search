@@ -771,6 +771,23 @@ def canonical_key(profile_url: str) -> str:
     return f"url:{norm}"
 
 
+def _exclusion_key(value: str) -> str:
+    """Require a profile identifier; canonical_key also accepts non-profile URLs."""
+    value = value.strip()
+    if re.fullmatch(r"in:[a-zA-Z0-9-]+", value):
+        return canonical_key(f"/in/{value[3:]}")
+    try:
+        url = urlparse(value)
+    except ValueError:
+        url = None
+    if (url and url.scheme in ("https", "http")
+            and re.fullmatch(r"(?:[a-z0-9-]+\.)*linkedin\.com", url.netloc.lower())
+            and re.fullmatch(r"/in/[a-zA-Z0-9-]+/?", url.path)
+            and not any(ch.isspace() for ch in value)):
+        return canonical_key(value)
+    raise argparse.ArgumentTypeError("expected in:<slug> or a LinkedIn /in/<slug> profile URL")
+
+
 def parse_window(spec: str) -> tuple[int, int]:
     """Parse "HH:MM-HH:MM" into (start, end) minutes-since-midnight."""
     match = re.fullmatch(r"(\d{2}):(\d{2})-(\d{2}):(\d{2})", (spec or "").strip())
@@ -2156,6 +2173,7 @@ def run_queue(
     sleeper=None, rng: random.Random | None = None, now_iso: str | None = None,
     clock=None, login_grace_s=LOGIN_GRACE_S, login_interval_s=LOGIN_POLL_S,
     goal: int | None = None, replenish=None, account_activity: Path | None = None,
+    excluded_keys: frozenset[str] = frozenset(),
 ) -> dict:
     """Ledger is authoritative; reserve before the driver, persist every result.
 
@@ -2290,6 +2308,8 @@ def run_queue(
                 unknown_streak = 0
                 summary["skipped"] += 1
                 emit(dict(ts=timestamp, decision="skip", reason=f"unkeyable: {exc}", live=live))
+                continue
+            if key in excluded_keys:
                 continue
             known = ledger.get("persons", {}).get(key)
             score, reasons = score_candidate(candidate, cfg)
@@ -2439,6 +2459,7 @@ def run_discover(
     rng: random.Random | None = None,
     now_iso: str | None = None,
     driver=None,
+    excluded_keys: frozenset[str] = frozenset(),
 ) -> dict:
     """Execute one discovery pass: search people-search, score the cards with
     the invite matcher's score_candidate, and queue matches in the ledger for
@@ -2528,12 +2549,13 @@ def run_discover(
                     if not results:
                         break
                 for card in results:
-                    summary["decisions"].append(
-                        handle_card(
-                            card, query, cfg, ledger, min_score, live, timestamp,
-                            day, max_queued, max_profile_views, driver, summary, audit,
-                        )
+                    decision = handle_card(
+                        card, query, cfg, ledger, min_score, live, timestamp,
+                        day, max_queued, max_profile_views, driver, summary, audit,
+                        excluded_keys=excluded_keys,
                     )
+                    if decision is not None:
+                        summary["decisions"].append(decision)
                     if summary["stopped"] == "queue_cap_reached":
                         return summary
     finally:
@@ -2566,9 +2588,10 @@ def handle_card(
     driver,
     summary: dict,
     audit,
-) -> dict:
-    """Score one search card and queue, skip, or defer it. Returns the
-    decision record (also appended to summary counts by the caller)."""
+    *,
+    excluded_keys: frozenset[str] = frozenset(),
+) -> dict | None:
+    """Score one search card and return its decision, or ignore an excluded target."""
     candidate = {
         "profile_url": card.get("profile_url") or "",
         "name": card.get("name") or "",
@@ -2582,6 +2605,8 @@ def handle_card(
         record = {"ts": timestamp, "decision": "skip", "reason": f"unkeyable card: {exc}", "live": live}
         audit(record)
         return record
+    if key in excluded_keys:
+        return None
     status = _dedupe_status(ledger, key)
     if status in DISCOVERY_STATUSES:
         summary["skipped"] += 1
@@ -2675,12 +2700,13 @@ def load_candidates(path: Path) -> list[dict]:
     return data
 
 
-def _queued_candidates(ledger: dict) -> list[dict]:
-    return [person for person in ledger["persons"].values()
-            if person.get("status") == "queued" and person.get("profile_url")]
+def _queued_candidates(ledger: dict, excluded_keys: frozenset[str] = frozenset()) -> list[dict]:
+    return [person for key, person in ledger["persons"].items()
+            if key not in excluded_keys and person.get("status") == "queued" and person.get("profile_url")]
 
 
-def _dispatch_queries(cfg: dict, ledger: dict, cache: dict, defaults: dict) -> list[dict]:
+def _dispatch_queries(cfg: dict, ledger: dict, cache: dict, defaults: dict,
+                      excluded_keys: frozenset[str]) -> list[dict]:
     """Rank configured seeds by distinct, eligible cached cards; never raise the budgets."""
     remaining = []
     minimum = float(cfg.get("min_score", 0))
@@ -2697,6 +2723,8 @@ def _dispatch_queries(cfg: dict, ledger: dict, cache: dict, defaults: dict) -> l
                     key = canonical_key(card.get("profile_url") or "")
                 except ValueError:
                     continue
+                if key in excluded_keys:
+                    continue
                 status = _dedupe_status(ledger, key)
                 if (status not in DISCOVERY_STATUSES and card.get("name") and key.startswith("in:")
                         and score_candidate(card, cfg)[0] >= minimum):
@@ -2712,23 +2740,25 @@ def _dispatch_queries(cfg: dict, ledger: dict, cache: dict, defaults: dict) -> l
     return selected
 
 
-def _replenish_queue(driver, cfg: dict, ledger: dict, state_dir: Path, day: str, window: str):
+def _replenish_queue(driver, cfg: dict, ledger: dict, state_dir: Path, day: str, window: str,
+                     excluded_keys: frozenset[str]):
     defaults = discovery_defaults(cfg)
     cache_path = state_dir / CACHE_NAME
     cache = load_cache(cache_path)
     before = {key for key, person in ledger["persons"].items() if person.get("status") == "queued"}
     try:
         discovery = run_discover(
-            _dispatch_queries(cfg, ledger, cache, defaults), cfg, ledger, cache, state_dir / AUDIT_NAME,
+            _dispatch_queries(cfg, ledger, cache, defaults, excluded_keys), cfg, ledger, cache, state_dir / AUDIT_NAME,
             live=True, day=day, window=window, driver=driver,
             max_searches=defaults["max_searches"], max_pages=defaults["max_pages"],
             max_profile_views=defaults["max_profile_views"],
             max_queued=min(HARD_DAILY_CAP, defaults["max_queued_per_day"]),
-            search_min_delay=defaults["search_min_delay"], search_max_delay=defaults["search_max_delay"])
+            search_min_delay=defaults["search_min_delay"], search_max_delay=defaults["search_max_delay"],
+            excluded_keys=excluded_keys)
     finally:
         save_ledger(state_dir / LEDGER_NAME, ledger)
         save_cache(cache_path, cache)
-    replacement = [row for row in _queued_candidates(ledger)
+    replacement = [row for row in _queued_candidates(ledger, excluded_keys)
                    if canonical_key(row["profile_url"]) not in before]
     return replacement, {key: value for key, value in discovery.items() if key != "decisions"}
 
@@ -3001,12 +3031,15 @@ def cmd_run(args) -> int:
             sys.exit("invalid discovery budgets or empty seed queries")
     elif args.account_activity is not None:
         sys.exit("--account-activity is for verified --goal dispatches")
+    elif args.exclude:
+        sys.exit("--exclude is for --goal dispatches")
+    excluded_keys = frozenset(args.exclude)
 
     def execute():
         # Load only after acquiring the single-writer lock, not before waiting.
         ledger = load_ledger(state_dir / LEDGER_NAME)
         day = today_str()
-        candidates = _queued_candidates(ledger) if (args.from_ledger or args.goal is not None) else []
+        candidates = _queued_candidates(ledger, excluded_keys) if (args.from_ledger or args.goal is not None) else []
         if args.candidates is not None:
             candidates.extend(load_candidates(args.candidates))
         elif not args.from_ledger and args.goal is None:
@@ -3018,9 +3051,9 @@ def cmd_run(args) -> int:
             day=day, window=args.window, note=note,
             limit=HARD_DAILY_CAP if args.goal is not None else args.limit,
             min_delay=args.min_delay, max_delay=args.max_delay,
-            goal=args.goal, account_activity=args.account_activity,
-            replenish=(lambda driver: _replenish_queue(driver, cfg, ledger, state_dir, day, args.window))
-            if args.goal is not None else None,
+            goal=args.goal, account_activity=args.account_activity, excluded_keys=excluded_keys,
+            replenish=(lambda driver: _replenish_queue(
+                driver, cfg, ledger, state_dir, day, args.window, excluded_keys)) if args.goal is not None else None,
             driver_factory=lambda: PlaywrightDriver(args.profile_dir, places=cfg.get("location_allow", []),
                                                     capture_dir=state_dir / "diag_run"))
 
@@ -3293,6 +3326,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--limit", type=int, default=0, help="cap decisions this run (0 = no run cap)")
     run.add_argument("--goal", type=int, help="live dispatch: target N confirmed invites, replenishing clean skips")
     run.add_argument("--account-activity", type=Path, help="evidence-backed same-day account usage for --goal")
+    run.add_argument("--exclude", action="append", type=_exclusion_key, default=[],
+                     metavar="PROFILE", help="omit an exact LinkedIn profile URL or in:<slug> key in --goal (repeatable)")
     run.add_argument("--window", default=DEFAULT_WINDOW, help='daily window "HH:MM-HH:MM" local time')
     run.add_argument("--note-file", type=Path, help="optional invite note file (<=300 chars)")
     run.add_argument("--min-delay", type=float, default=DEFAULT_MIN_DELAY)

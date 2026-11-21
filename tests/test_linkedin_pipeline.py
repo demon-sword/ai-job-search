@@ -125,6 +125,7 @@ class OfflinePipeline(unittest.TestCase):
         kind = self.layouts.get(slug, "direct")
         actions = {
             "direct": '<button id="connect">Connect</button>',
+            "ambiguous": '<button id="connect">Connect</button>',
             "pending": f'<button aria-label="Pending, click to withdraw invitation sent to {name}">Pending</button>',
             "miss": '<button>Follow</button>',
             "modal": '<button>Follow</button>',
@@ -146,7 +147,14 @@ class OfflinePipeline(unittest.TestCase):
             status.textContent = 'Pending';
             status.setAttribute('aria-label', 'Pending, click to withdraw invitation sent to ' + name);
           }};
-          document.querySelector('#connect')?.addEventListener('click', () => done('direct'));
+          document.querySelector('#connect')?.addEventListener('click', () => {{
+            if ({json.dumps(kind)} !== 'ambiguous') {{ done('direct'); return; }}
+            fixturePress(slug, 'connect');
+            const dialog = document.createElement('div'); dialog.setAttribute('role', 'dialog');
+            dialog.innerHTML = 'Withdraw invitation? <button>Cancel</button>';
+            dialog.querySelector('button').onclick = () => dialog.remove();
+            document.body.append(dialog);
+          }});
           const menu = document.querySelector('#menu');
           if (menu) {{
             document.querySelector('#more').onclick = () => menu.hidden = !menu.hidden;
@@ -183,10 +191,79 @@ class OfflinePipeline(unittest.TestCase):
         self.assertEqual(self.bad_routes, [])
         return code, out.getvalue(), err.getvalue()
 
-    def dispatch(self, goal, *, activity=True):
+    def dispatch(self, goal, *options, activity=True):
         return self.cli("run", "--live", "--goal", str(goal), "--profile-dir", str(self.profile),
                         "--targets", str(self.targets), "--min-delay", "60", "--max-delay", "60",
-                        *(["--account-activity", str(self.activity)] if activity else []))
+                        *(["--account-activity", str(self.activity)] if activity else []), *options)
+
+    def test_exclusion_omits_reconciled_targets_from_queue_and_refill(self):
+        self.add_queue("queued-retry", "initial")
+        ledger = bot.load_ledger(self.ledger_path)
+        prior = (self.now - timedelta(minutes=2)).isoformat()
+        deadline = self.now + timedelta(seconds=30)
+        ledger["sends"] = [prior]
+        ledger["queued_log"] = [prior]
+        ledger["next_send_after"] = deadline.isoformat()
+        for slug, status in (("queued-retry", "queued"), ("refill-retry", "retryable")):
+            key = f"in:{slug}"
+            ledger["persons"][key] = candidate(slug, status=status, last_ts=prior)
+            ledger["attempts"][key] = dict(status="not_sent", actions=1, reserved_ts=prior,
+                                           candidate=candidate(slug), reconciliation_id="fixture")
+        bot.save_ledger(self.ledger_path, ledger)
+        alias = f"{BASE}/in/REFILL-RETRY/?source=fixture"
+        bot.save_cache(self.state / bot.CACHE_NAME, {"pages": {
+            bot.cache_key("cached", "", 1): {"results": [
+                candidate("refill-retry", profile_url=alias, headline=""),
+                candidate("queued-retry", profile_url=f"{BASE}/in/QUEUED-RETRY/?source=fixture"),
+                candidate("refill-retry"), candidate("replacement"),
+            ]},
+            bot.cache_key("cached", "", 2): {"results": []},
+        }})
+        self.write_activity(day=1, week=1)
+        code, out, err = self.dispatch(2, "--exclude", "in:queued-retry", "--exclude",
+                                       "https://uk.linkedin.com/in/REFILL-RETRY/?trk=fixture#about")
+        self.assertEqual(code, 0, (out, err))
+        self.assertIn("2/2 confirmed", out)
+        self.assertEqual(self.visits, ["initial", "replacement"])
+        self.assertEqual([slug for slug, _, _ in self.presses], self.visits)
+        self.assertGreaterEqual(self.presses[0][2], deadline)
+        result = bot.load_ledger(self.ledger_path)
+        for key in ledger["attempts"]:
+            self.assertEqual(result["attempts"][key], ledger["attempts"][key])
+            self.assertEqual(result["persons"][key], ledger["persons"][key])
+        stats = result["last_run"]["summary"]
+        self.assertEqual((stats["skipped"], stats["unattempted"]), (0, 0))
+        self.assertEqual((stats["discovery"]["profile_views"], stats["discovery"]["queued"]), (0, 1))
+        self.assertEqual(result["queued_log"][:-1], ledger["queued_log"])
+        self.assertEqual(result["sends"][:-2], ledger["sends"])
+        self.assertEqual(bot.quota_today(result, self.now.date().isoformat()), 3)
+
+    def test_invalid_or_non_goal_exclusion_refuses_before_browser_guard(self):
+        with patch.object(bot, "GuardedBrowserLoad") as guard:
+            for bad in ("", "in:", "in:one,two", "https://www.linkedin.com/jobs/",
+                        f"{BASE}/in/bad%20slug", f"{BASE}@example.test/in/person"):
+                with self.subTest(bad=bad), self.assertRaises(SystemExit) as exc:
+                    self.dispatch(1, "--exclude", bad)
+                self.assertEqual(exc.exception.code, 2)
+            with self.assertRaisesRegex(SystemExit, "--exclude is for --goal"):
+                self.cli("run", "--live", "--from-ledger", "--exclude", "in:person")
+        guard.assert_not_called()
+        self.assertFalse(self.state.exists())
+
+    def test_exclusion_keeps_strict_stop_after_ambiguous_action(self):
+        self.add_queue("omit", "ambiguous", "deferred")
+        self.layouts["ambiguous"] = "ambiguous"
+        self.write_activity()
+        code, out, err = self.dispatch(2, "--exclude", "in:omit")
+        self.assertEqual(code, bot.EXIT_STOPPED, (out, err))
+        self.assertIn("destructive_dialog_avoided", err)
+        self.assertEqual(self.visits, ["ambiguous"])
+        self.assertEqual(self.searches, [])
+        self.assertEqual([(slug, action) for slug, action, _ in self.presses], [("ambiguous", "connect")])
+        result = bot.load_ledger(self.ledger_path)
+        self.assertEqual(set(result["attempts"]), {"in:ambiguous"})
+        self.assertEqual(result["attempts"]["in:ambiguous"]["status"], "uncertain")
+        self.assertEqual(bot.quota_today(result, self.now.date().isoformat()), 1)
 
     def test_ten_confirmed_with_one_owner_and_bounded_replenishment(self):
         self.add_queue("pending", "miss", "initial")
@@ -236,8 +313,9 @@ class OfflinePipeline(unittest.TestCase):
         attempt = result["attempts"]["in:two"]
         self.assertEqual((attempt["status"], attempt["actions"]), ("uncertain", 1))
         self.assertEqual(tuple(json.loads(out)["summary"][f] for f in ("sent", "uncertain", "unattempted")), (1, 1, 1))
-        code, _, err = self.dispatch(1, activity=False)
+        code, _, err = self.dispatch(1, "--exclude", "in:two", activity=False)
         self.assertEqual(code, bot.EXIT_STOPPED, err)
+        self.assertIn("reconciliation_required", err)
         self.assertEqual(self.starts, 1)
         audit = self.audit.read_bytes()
         manifest = self.root / "reconcile.json"
@@ -277,12 +355,15 @@ class OfflinePipeline(unittest.TestCase):
         self.assertEqual((len(self.searches), self.presses, self.visits), (1, [], []))
 
     def test_refuses_incomplete_or_insufficient_external_capacity_before_browser(self):
-        self.add_queue("unused")
+        self.add_queue("omitted", "unused")
+        code, _, err = self.dispatch(5, "--exclude", "in:omitted", activity=False)
+        self.assertEqual(code, bot.EXIT_STOPPED, err)
+        self.assertIn("verified account-wide activity is required", err)
         for overrides in ({"complete": False}, {"used_today_upper": 16, "used_7d_upper": 16},
                           {"used_7d_upper": 86}, {"ledger_sha256": "stale"}, {"evidence": []}):
             with self.subTest(overrides=overrides):
                 self.write_activity(**overrides)
-                code, _, err = self.dispatch(5)
+                code, _, err = self.dispatch(5, "--exclude", "in:omitted")
                 self.assertEqual(code, bot.EXIT_STOPPED, err)
         self.assertEqual(self.starts, 0)
         self.assertEqual(bot.load_ledger(self.ledger_path)["attempts"], {})
